@@ -24,8 +24,12 @@ Tipp: Kabelloses Debugging nachts aus, und vor der ersten Nacht einen 30-Minuten
 ## 3. Daten exportieren
 Die Dateien liegen im privaten App-Ordner; bei einem Debug-Build kommt man per `run-as` dran:
 ```
-adb shell run-as de.alex.sleeplogger ls files/sessions
-adb exec-out run-as de.alex.sleeplogger tar c -C files sessions > sessions.tar
+adb devices          # Uhr taucht beim WLAN-Debugging oft doppelt auf -> mit -s <Name> wählen
+adb -s <IP:Port> shell run-as de.alex.sleeplogger ls files/sessions
+```
+Export (unter Windows über `cmd`, weil PowerShell bei `>` Binärdaten als UTF-16 zerstört):
+```
+cmd /c "adb -s <IP:Port> exec-out run-as de.alex.sleeplogger tar c -C files sessions > sessions.tar"
 tar xf sessions.tar
 ```
 
