@@ -26,7 +26,7 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * Loggt Beschleunigung (~25 Hz, im Sensor-FIFO gebatcht) und Puls (~1 Hz) in CSV-Dateien.
+ * Loggt Beschleunigung und Gyroskop (~25 Hz, im Sensor-FIFO gebatcht) und Puls (~1 Hz) in CSV-Dateien.
  * Dateien landen in files/sessions/<start>/ und werden per adb exportiert (siehe README).
  */
 class SensorLoggerService : Service(), SensorEventListener {
@@ -54,6 +54,7 @@ class SensorLoggerService : Service(), SensorEventListener {
     private var wakeLock: PowerManager.WakeLock? = null
 
     private var accelOut: BufferedWriter? = null
+    private var gyroOut: BufferedWriter? = null
     private var hrOut: BufferedWriter? = null
     private var eventsOut: BufferedWriter? = null
 
@@ -63,7 +64,7 @@ class SensorLoggerService : Service(), SensorEventListener {
 
     private val flushRunnable = object : Runnable {
         override fun run() {
-            accelOut?.flush(); hrOut?.flush(); eventsOut?.flush()
+            accelOut?.flush(); gyroOut?.flush(); hrOut?.flush(); eventsOut?.flush()
             handler.postDelayed(this, FLUSH_INTERVAL_MS)
         }
     }
@@ -96,6 +97,7 @@ class SensorLoggerService : Service(), SensorEventListener {
         val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         val dir = File(filesDir, "sessions/$stamp").apply { mkdirs() }
         accelOut = File(dir, "accel.csv").bufferedWriter().apply { write("epoch_ms,x,y,z\n") }
+        gyroOut = File(dir, "gyro.csv").bufferedWriter().apply { write("epoch_ms,x,y,z\n") }
         hrOut = File(dir, "hr.csv").bufferedWriter().apply { write("epoch_ms,bpm,accuracy\n") }
         eventsOut = File(dir, "events.csv").bufferedWriter().apply { write("epoch_ms,event\n") }
 
@@ -103,6 +105,8 @@ class SensorLoggerService : Service(), SensorEventListener {
         // Gibt es keins, halten wir einen Partial-Wakelock (kostet mehr Akku).
         val wakeAccel = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER, true)
         val accel = wakeAccel ?: sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+        // Gyro sieht die winzige Handgelenksrotation durch Atmung besser als das Accelerometer
+        val gyro = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
         val hr = sensorManager.getDefaultSensor(Sensor.TYPE_HEART_RATE)
 
         if (wakeAccel == null || hr != null) {
@@ -113,11 +117,14 @@ class SensorLoggerService : Service(), SensorEventListener {
         }
 
         logEvent("start accel=${accel?.name} wakeup=${wakeAccel != null} " +
-                "fifo=${accel?.fifoMaxEventCount} hr=${hr?.name} wakelock=${wakeLock != null}")
+                "fifo=${accel?.fifoMaxEventCount} gyro=${gyro?.name} hr=${hr?.name} wakelock=${wakeLock != null}")
 
         accel?.let {
             sensorManager.registerListener(this, it, ACCEL_PERIOD_US, ACCEL_MAX_LATENCY_US, handler)
         }
+        gyro?.let {
+            sensorManager.registerListener(this, it, ACCEL_PERIOD_US, ACCEL_MAX_LATENCY_US, handler)
+        } ?: logEvent("no_gyroscope")
         hr?.let {
             sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL, 0, handler)
         } ?: logEvent("no_heart_rate_sensor")
@@ -134,6 +141,10 @@ class SensorLoggerService : Service(), SensorEventListener {
                 val v = event.values
                 accelOut?.write("$epochMs,${v[0]},${v[1]},${v[2]}\n")
                 accelCount++
+            }
+            Sensor.TYPE_GYROSCOPE -> {
+                val v = event.values
+                gyroOut?.write("$epochMs,${v[0]},${v[1]},${v[2]}\n")
             }
             Sensor.TYPE_HEART_RATE -> {
                 lastBpm = event.values[0]
@@ -157,7 +168,7 @@ class SensorLoggerService : Service(), SensorEventListener {
             // Schreiben auf dem Writer-Thread abschließen, damit keine Zeilen verloren gehen.
             handler.post {
                 logEvent("stop")
-                accelOut?.close(); hrOut?.close(); eventsOut?.close()
+                accelOut?.close(); gyroOut?.close(); hrOut?.close(); eventsOut?.close()
                 thread.quitSafely()
             }
             wakeLock?.takeIf { it.isHeld }?.release()
