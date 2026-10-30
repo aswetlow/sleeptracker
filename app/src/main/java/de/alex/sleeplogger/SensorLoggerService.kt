@@ -12,6 +12,7 @@ import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
+import android.os.BatteryManager
 import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
@@ -37,6 +38,7 @@ class SensorLoggerService : Service(), SensorEventListener {
         const val ACCEL_PERIOD_US = 40_000          // 25 Hz
         const val ACCEL_MAX_LATENCY_US = 10_000_000 // bis zu 10 s im FIFO puffern
         const val FLUSH_INTERVAL_MS = 30_000L
+        const val BATTERY_INTERVAL_MS = 10 * 60_000L
         private const val CHANNEL_ID = "logging"
         private const val NOTIFICATION_ID = 1
 
@@ -66,6 +68,14 @@ class SensorLoggerService : Service(), SensorEventListener {
         override fun run() {
             accelOut?.flush(); gyroOut?.flush(); hrOut?.flush(); eventsOut?.flush()
             handler.postDelayed(this, FLUSH_INTERVAL_MS)
+        }
+    }
+
+    private val batteryRunnable = object : Runnable {
+        override fun run() {
+            val bm = getSystemService(Context.BATTERY_SERVICE) as BatteryManager
+            logEvent("battery ${bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)}")
+            handler.postDelayed(this, BATTERY_INTERVAL_MS)
         }
     }
 
@@ -130,6 +140,7 @@ class SensorLoggerService : Service(), SensorEventListener {
         } ?: logEvent("no_heart_rate_sensor")
 
         handler.postDelayed(flushRunnable, FLUSH_INTERVAL_MS)
+        handler.post(batteryRunnable)
         isRunning = true
         Log.i(TAG, "logging to ${dir.absolutePath}")
     }
@@ -165,8 +176,11 @@ class SensorLoggerService : Service(), SensorEventListener {
         if (isRunning) {
             sensorManager.unregisterListener(this)
             handler.removeCallbacks(flushRunnable)
+            handler.removeCallbacks(batteryRunnable)
             // Schreiben auf dem Writer-Thread abschließen, damit keine Zeilen verloren gehen.
             handler.post {
+                batteryRunnable.run()
+                handler.removeCallbacks(batteryRunnable)
                 logEvent("stop")
                 accelOut?.close(); gyroOut?.close(); hrOut?.close(); eventsOut?.close()
                 thread.quitSafely()

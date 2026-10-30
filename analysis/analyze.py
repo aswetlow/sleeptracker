@@ -233,6 +233,20 @@ def cvhr_episodes(hr: pd.DataFrame, events: pd.DataFrame):
     return pd.DataFrame(episodes), pk
 
 
+def battery_drain(session: Path):
+    """Akkustand aus events.csv (App loggt alle 10 min): (Start-%, End-%, %/h) oder None."""
+    p = session / "events.csv"
+    if not p.exists():
+        return None
+    ev = pd.read_csv(p)
+    bat = ev[ev.event.str.startswith("battery ")]
+    if len(bat) < 2:
+        return None
+    pct = bat.event.str.split().str[1].astype(float)
+    hours = (bat.epoch_ms.iloc[-1] - bat.epoch_ms.iloc[0]) / 3.6e6
+    return pct.iloc[0], pct.iloc[-1], (pct.iloc[0] - pct.iloc[-1]) / max(hours, 1e-9)
+
+
 def per_minute(grid, activity, events, hr, breath, cvhr):
     df = pd.DataFrame({"epoch_ms": grid, "activity": activity})
     df["minute"] = (df.epoch_ms // 60000) * 60000
@@ -279,6 +293,8 @@ def main():
     good_breath = breath[breath.quality >= BREATH_MIN_QUALITY] if not breath.empty else breath
     lines = [
         f"Aufzeichnung: {hours:.2f} h, Datenlücken: {gap_s / 60:.1f} min",
+        *([f"Akku: {b[0]:.0f} % → {b[1]:.0f} % ({b[2]:.1f} %/h, "
+            f"8 h ≈ {b[2] * 8:.0f} %)"] if (b := battery_drain(args.session)) else []),
         f"Bewegungs-Events: {len(events)} ({len(events) / max(hours, 1e-9):.1f}/h)",
     ]
     if not events.empty:
@@ -316,6 +332,7 @@ def main():
     events.to_csv(args.session / "movement_events.csv", index=False)
     breath.to_csv(args.session / "breathing.csv", index=False)
     cvhr.to_csv(args.session / "cvhr_episodes.csv", index=False)
+    cvhr_peaks.to_csv(args.session / "cvhr_peaks.csv", index=False)
     minutes.to_csv(args.session / "per_minute.csv")
 
     if args.plot:
