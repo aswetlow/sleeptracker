@@ -56,6 +56,15 @@ Ergebnis im Session-Ordner:
 Stellschrauben oben im Skript: `THRESHOLD_K`, `MIN_THRESHOLD` (Bewegung), `BREATH_MIN_QUALITY`,
 `CVHR_MIN_RISE_BPM`, `CVHR_CYCLE_S`, `CVHR_MIN_CYCLES`.
 
+### Fitbit-Export (optional)
+Liegt im Session-Ordner eine `fitbit.json` (der Nacht-Export mit `"fitbit": {...}`), liest `analyze.py`
+sie automatisch mit ein (oder `--fitbit pfad/zur/datei`). Dann kommen dazu:
+- Atemfrequenz der Uhr pro Schlafphase neben den Fitbit-Werten, Puls-Abgleich, Bewegung pro Phase
+- SpO2: Minuten unter 90 %, Entsättigungen, und `spo2_episodes.csv` mit Episoden ≥5 min unter 90 %.
+  Pro Episode wird geprüft, ob der Arm währenddessen unbewegt lag, ob sie mit einer Bewegung endet
+  und ob der Puls reagiert. Alle drei = „vermutlich Lage-Artefakt“ (z. B. Arm eingeklemmt).
+- Raumklima (tado), Plot mit Hypnogramm, Fitbit-Puls und SpO2
+
 ### Atemfrequenz
 Nur in ruhigen Fenstern. Pro Sensor Bandpass 0,1–0,5 Hz, Hauptkomponente über alle drei Achsen,
 Periode per Autokorrelation. Qualität = Höhe des Autokorrelations-Peaks. Reines Rauschen liegt

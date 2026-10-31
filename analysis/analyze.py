@@ -285,6 +285,7 @@ def main():
     ap.add_argument("session", type=Path)
     ap.add_argument("--fs", type=float, default=25.0)
     ap.add_argument("--plot", action="store_true")
+    ap.add_argument("--fitbit", type=Path, help="Fitbit-Export (Standard: fitbit.json im Session-Ordner)")
     args = ap.parse_args()
 
     acc, gyro, hr = load(args.session)
@@ -298,6 +299,14 @@ def main():
     breath = breathing_estimates(grid, sources, activity, thr, args.fs)
     cvhr, cvhr_peaks = cvhr_episodes(hr, events)
     minutes = per_minute(grid, activity, events, hr, breath, cvhr)
+
+    import fitbit as F
+    fb_data, fb_path = F.find_export(args.session, args.fitbit)
+    fb = episodes = None
+    if fb_data:
+        fb = F.load(fb_data)
+        minutes = F.annotate(minutes, fb, F.wrist_pose(acc))
+        episodes = F.low_spo2_episodes(minutes, events)
 
     hours = (grid[-1] - grid[0]) / 3.6e6
     gap_s = np.isnan(xyz[:, 0]).sum() / args.fs
@@ -336,6 +345,16 @@ def main():
         ]
     else:
         lines.append("Periodische Pulsspitzen-Episoden: keine")
+    if fb:
+        lines += [f"(Fitbit-Export: {fb_path.name})"] + \
+            F.summary_lines(fb, minutes, breath, events, BREATH_MIN_QUALITY)[1:]
+        for _, e in episodes.iterrows():
+            lines.append(f"  SpO2 < {F.LOW_SPO2} %: {e.start:%H:%M}–{e.end:%H:%M} ({e.minutes} min, "
+                         f"min {e.spo2_min:.1f} %, Armlage ±{e.max_pose_change_deg:.0f}°, "
+                         f"Phase {e.stage}) → {e.verdict}")
+        if episodes is not None and len(episodes):
+            lines.append("  Hinweis: Uhr-SpO2 ist am Handgelenk störanfällig. Wiederholt sich das, "
+                         "mit Finger-Pulsoximeter prüfen.")
     summary = "\n".join(lines)
     print(summary)
 
@@ -345,20 +364,38 @@ def main():
     cvhr.to_csv(args.session / "cvhr_episodes.csv", index=False)
     cvhr_peaks.to_csv(args.session / "cvhr_peaks.csv", index=False)
     minutes.to_csv(args.session / "per_minute.csv")
+    if episodes is not None:
+        episodes.to_csv(args.session / "spo2_episodes.csv", index=False)
 
     if args.plot:
         import matplotlib.pyplot as plt
-        fig, ax = plt.subplots(4, 1, sharex=True, figsize=(14, 10))
+        if fb:
+            fig, ax = plt.subplots(6, 1, sharex=True, figsize=(14, 15),
+                                   gridspec_kw={"height_ratios": [1, 1, 1, 1.4, 1.2, 1.2]})
+            F.plot_extra(ax[0], ax[5], fb, minutes, episodes)
+            ax = [ax[1], ax[2], ax[3], ax[4], ax[0], ax[5]]
+        else:
+            fig, ax = plt.subplots(4, 1, sharex=True, figsize=(14, 10))
         ax[0].plot(minutes.index, minutes.activity_mean); ax[0].set_ylabel("Aktivität")
         ax[1].bar(minutes.index, minutes.movement_events, width=1 / 1440)
         ax[1].set_ylabel("Events/min")
         if "hr_mean" in minutes:
-            ax[2].plot(minutes.index, minutes.hr_mean); ax[2].set_ylabel("Puls")
+            ax[2].plot(minutes.index, minutes.hr_mean, label="SleepLogger")
+            if "fitbit_hr" in minutes:
+                ax[2].plot(minutes.index, minutes.fitbit_hr, alpha=0.5, label="Fitbit")
+                ax[2].legend(loc="upper right")
+            ax[2].set_ylabel("Puls")
             for _, e in cvhr.iterrows():
                 ax[2].axvspan(pd.to_datetime(e.start_ms, unit="ms", utc=True).tz_convert("Europe/Berlin"),
                               pd.to_datetime(e.end_ms, unit="ms", utc=True).tz_convert("Europe/Berlin"),
                               color="tab:red", alpha=0.2)
-        if "breaths_per_min" in minutes:
+        if "breaths_per_min" in minutes and "stage" in minutes:
+            col = {"wake": "tab:red", "rem": "tab:purple", "light": "tab:cyan", "deep": "tab:blue"}
+            for st, c in col.items():
+                sel = minutes[minutes.stage == st]
+                ax[3].plot(sel.index, sel.breaths_per_min, ".", color=c, label=st)
+            ax[3].legend(loc="upper right", ncol=4)
+        elif "breaths_per_min" in minutes:
             ax[3].plot(minutes.index, minutes.breaths_per_min, ".")
         ax[3].set_ylabel("Atemzüge/min")
         fig.tight_layout()
