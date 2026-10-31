@@ -11,6 +11,7 @@ Schreibt movement_events.csv, breathing.csv, cvhr_episodes.csv, per_minute.csv
 und summary.txt in den Ordner.
 """
 import argparse
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -196,11 +197,21 @@ def cvhr_episodes(hr: pd.DataFrame, events: pd.DataFrame):
         bpm[(t > a) & (t < b)] = np.nan
     s = pd.Series(bpm)
     detr = (s - s.rolling(180, center=True, min_periods=60).median()).fillna(0).values
-    peaks, props = signal.find_peaks(detr, prominence=CVHR_MIN_RISE_BPM, distance=15, wlen=40)
+    with warnings.catch_warnings():  # flache Abschnitte erzeugen harmlose Prominenz-Warnungen
+        warnings.simplefilter("ignore", RuntimeWarning)
+        peaks, props = signal.find_peaks(detr, prominence=CVHR_MIN_RISE_BPM, distance=15, wlen=40)
     if not len(peaks):
         return pd.DataFrame(), pd.DataFrame()
 
     mv = events[["start_ms", "end_ms"]].values if not events.empty else np.empty((0, 2))
+    # Spitzen während langer Bewegung (>30 s: wach, aufgestanden) sind keine Weckreaktion
+    long_mv = mv[(mv[:, 1] - mv[:, 0]) > 30_000] if len(mv) else mv
+    awake = np.array([((long_mv[:, 0] - 30_000 <= x) & (long_mv[:, 1] + 30_000 >= x)).any()
+                      for x in t[peaks]], bool)
+    peaks = peaks[~awake]
+    props = {k: v[~awake] for k, v in props.items()}
+    if not len(peaks):
+        return pd.DataFrame(), pd.DataFrame()
     pk = pd.DataFrame({
         "epoch_ms": t[peaks], "rise_bpm": props["prominences"],
         "with_movement": [bool(((mv[:, 0] - 10_000 <= x) & (mv[:, 1] + 10_000 >= x)).any())

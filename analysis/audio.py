@@ -47,6 +47,8 @@ PAUSE_MAX_S = 120            # länger = Atmen nur zu leise, keine Pause
 PAUSE_CONTEXT_S = 20         # direkt davor muss Atmen hörbar gewesen sein
 PAUSE_CONTEXT_SHARE = 0.4
 CLAP_DB = 40
+SNORE_TRAIN = 3              # Schnarcher zählen nur in Serien im Atemrhythmus …
+SNORE_INTERVAL_S = (2.5, 8)  # … mit diesem Abstand; einzelne tiefe Geräusche sind meist Rascheln
 CLAP_SEARCH_S = 15 * 60
 TZ = ZoneInfo("Europe/Berlin")
 
@@ -106,9 +108,33 @@ def frame_features(path: Path):
 
 # ---------- Startzeit ----------
 
-def audio_start(path: Path, cli_start: str | None, duration_s: float):
+GERMAN_MONTHS = {"jan": 1, "feb": 2, "mär": 3, "mar": 3, "apr": 4, "mai": 5, "jun": 6, "jul": 7,
+                 "aug": 8, "sep": 9, "okt": 10, "nov": 11, "dez": 12}
+
+
+def name_time(stem: str, year: int):
+    """Startzeit aus dem Dateinamen: ISO-artig oder wie der Pixel-Rekorder ("30. Okt. um 22-49")."""
+    m = re.search(r"(\d{4})-?(\d{2})-?(\d{2})[ _T-]?(\d{2})[.:-]?(\d{2})[.:-]?(\d{2})", stem)
+    if m:
+        return datetime(*map(int, m.groups()), tzinfo=TZ)
+    m = re.search(r"(\d{1,2})\.\s*([A-Za-zä]{3})\w*\.?\s*(?:um\s*)?(\d{1,2})[-:.](\d{2})(?:[-:.](\d{2}))?",
+                  stem)
+    if m and m.group(2).lower() in GERMAN_MONTHS:
+        d, mon, h, mi, sec = m.groups()
+        return datetime(year, GERMAN_MONTHS[mon.lower()], int(d), int(h), int(mi), int(sec or 0),
+                        tzinfo=TZ)
+    return None
+
+
+def audio_start(path: Path, cli_start: str | None, duration_s: float, watch_start_ms=None):
+    """
+    Sammelt Kandidaten für den Aufnahmestart und nimmt den, der am nächsten am Start der Uhr liegt.
+    Nötig, weil Handys creation_time mal als Start, mal als Ende der Aufnahme schreiben
+    (der Pixel-Rekorder schreibt das Ende).
+    """
     if cli_start:
         return datetime.fromisoformat(cli_start).replace(tzinfo=TZ), "--start"
+    cands = []
     if shutil.which("ffprobe"):
         meta = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format_tags",
                                "-of", "json", str(path)], capture_output=True, text=True)
@@ -116,15 +142,22 @@ def audio_start(path: Path, cli_start: str | None, duration_s: float):
         ct = tags.get("creation_time") or tags.get("date")
         if ct and not ct.startswith("1970"):
             try:
-                return datetime.fromisoformat(ct.replace("Z", "+00:00")), "Metadaten"
+                t = datetime.fromisoformat(ct.replace("Z", "+00:00"))
+                cands += [(t, "Metadaten (Start)"),
+                          (datetime.fromtimestamp(t.timestamp() - duration_s, tz=timezone.utc),
+                           "Metadaten (Ende − Dauer)")]
             except ValueError:
                 pass
-    m = re.search(r"(\d{4})-?(\d{2})-?(\d{2})[ _T-]?(\d{2})[.:-]?(\d{2})[.:-]?(\d{2})", path.stem)
-    if m:
-        return datetime(*map(int, m.groups()), tzinfo=TZ), "Dateiname"
-    # Letzter Ausweg: Änderungszeit ≈ Ende der Aufnahme
-    end = datetime.fromtimestamp(os.path.getmtime(path), tz=timezone.utc)
-    return datetime.fromtimestamp(end.timestamp() - duration_s, tz=timezone.utc), "Dateizeit (ungenau)"
+    mtime_end = datetime.fromtimestamp(os.path.getmtime(path), tz=timezone.utc)
+    ref_year = (cands[0][0] if cands else mtime_end).astimezone(TZ).year
+    t = name_time(path.stem, ref_year)
+    if t:
+        cands.insert(0, (t, "Dateiname"))
+    cands.append((datetime.fromtimestamp(mtime_end.timestamp() - duration_s, tz=timezone.utc),
+                  "Dateizeit (ungenau)"))
+    if watch_start_ms is None:
+        return cands[0]
+    return min(cands, key=lambda c: abs(c[0].timestamp() * 1000 - watch_start_ms))
 
 
 def clap_offset_ms(frame_ms, rel_db, session: Path):
@@ -183,9 +216,14 @@ def analyse(feat, t0_ms):
     })
 
     events = []
-    for a, b in runs(snore_f):
-        if 3 <= b - a <= 40:  # 0,3–4 s
-            events.append(("snore", frame_ms[a], frame_ms[b - 1], ""))
+    sn = np.array([(frame_ms[a], frame_ms[b - 1]) for a, b in runs(snore_f) if 3 <= b - a <= 40])
+    if len(sn):
+        ok = (np.diff(sn[:, 0]) >= SNORE_INTERVAL_S[0] * 1000) & (np.diff(sn[:, 0]) <= SNORE_INTERVAL_S[1] * 1000)
+        keep = np.zeros(len(sn), bool)
+        for a, b in runs(ok):          # b - a Abstände = b - a + 1 Schnarcher in Serie
+            if b - a + 1 >= SNORE_TRAIN:
+                keep[a:b + 1] = True
+        events += [("snore", x, y, "") for x, y in sn[keep]]
     for a, b in runs(loud_f):
         events.append(("loud", frame_ms[a], frame_ms[b - 1], f"{rel_total[a:b].max():.0f} dB"))
 
@@ -259,12 +297,16 @@ def main():
     ap.add_argument("audio", type=Path)
     ap.add_argument("--start", help='Lokale Startzeit der Aufnahme, z. B. "2026-10-30 23:05:12"')
     ap.add_argument("--no-clap", action="store_true", help="Keine Feinsynchronisation per Klatschen")
+    ap.add_argument("--skip-min", type=float, default=0,
+                    help="Erste N Minuten ignorieren (Einschlafen, Hörbuch, Reden)")
     args = ap.parse_args()
 
     print("Lese Audio …")
     feat = frame_features(args.audio)
     dur_s = len(feat) / FRAME_HZ
-    start, how = audio_start(args.audio, args.start, dur_s)
+    acc_path = args.session / "accel.csv"
+    watch_start = float(pd.read_csv(acc_path, nrows=1).epoch_ms[0]) if acc_path.exists() else None
+    start, how = audio_start(args.audio, args.start, dur_s, watch_start)
     t0 = start.timestamp() * 1000
     per_s, ev, br, frame_ms, rel_total = analyse(feat, t0)
 
@@ -280,6 +322,22 @@ def main():
     else:
         lines.append("Klatsch-Synchronisation: nicht gefunden, Startzeit ungeprüft")
 
+    # Anfang ignorieren und Geräusche während Bewegung der Uhr verwerfen (Rascheln ≠ Schnarchen/Pause)
+    cut = per_s.epoch_ms.iloc[0] + args.skip_min * 60_000
+    per_s = per_s[per_s.epoch_ms >= cut]
+    ev = ev[ev.start_ms >= cut]
+    if not br.empty:
+        br = br[br.epoch_ms >= cut]
+    mv_path = args.session / "movement_events.csv"
+    if mv_path.exists() and mv_path.stat().st_size > 1:
+        mv = pd.read_csv(mv_path)[["start_ms", "end_ms"]].values
+        during = [((mv[:, 0] - 2000 <= e) & (mv[:, 1] + 2000 >= s)).any()
+                  for s, e in zip(ev.start_ms, ev.end_ms)]
+        dropped = ev[np.array(during, bool) & ev.type.isin(["snore", "pause"])]
+        ev = ev.drop(dropped.index)
+        if len(dropped):
+            lines.append(f"Verworfen wegen gleichzeitiger Bewegung: {len(dropped)} Schnarcher/Pausen")
+    dur_s = len(per_s)
     hours = max(dur_s / 3600, 1e-9)
     counts = ev.type.value_counts()
     good = br[br.quality >= A.BREATH_MIN_QUALITY] if not br.empty else br
