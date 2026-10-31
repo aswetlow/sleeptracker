@@ -32,6 +32,11 @@ Export (unter Windows über `cmd`, weil PowerShell bei `>` Binärdaten als UTF-1
 cmd /c "adb -s <IP:Port> exec-out run-as de.alex.sleeplogger tar c -C files sessions > sessions.tar"
 tar xf sessions.tar
 ```
+Konkret für Alex' Uhr (der Port ändert sich, sobald kabelloses Debugging neu startet; aktuellen
+Port unter „Kabelloses Debugging“ auf der Uhr oder per `adb devices` nachsehen):
+```
+cmd /c "adb -s 192.168.178.35:44691 exec-out run-as de.alex.sleeplogger tar c -C files sessions > sessions.tar"
+```
 
 Pro Nacht entsteht `sessions/<Startzeit>/` mit:
 - `accel.csv` – `epoch_ms,x,y,z` (m/s², inkl. Schwerkraft)
