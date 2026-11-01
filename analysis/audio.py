@@ -50,6 +50,7 @@ CLAP_DB = 40
 SNORE_TRAIN = 3              # Schnarcher zählen nur in Serien im Atemrhythmus …
 SNORE_INTERVAL_S = (2.5, 8)  # … mit diesem Abstand; einzelne tiefe Geräusche sind meist Rascheln
 CLAP_SEARCH_S = 15 * 60
+CLAP_MAX_OFFSET_S = 20       # Handy- und Uhrzeit sind per Netz synchron; mehr Versatz = falsches Paar
 TZ = ZoneInfo("Europe/Berlin")
 
 
@@ -168,14 +169,16 @@ def clap_offset_ms(frame_ms, rel_db, session: Path):
         return None
     t_audio = frame_ms[cand[np.argmax(rel_db[cand])]]
     acc = pd.read_csv(session / "accel.csv")
-    near = acc[(acc.epoch_ms > t_audio - 300_000) & (acc.epoch_ms < t_audio + 300_000)]
+    win = CLAP_MAX_OFFSET_S * 1000
+    near = acc[(acc.epoch_ms > t_audio - win) & (acc.epoch_ms < t_audio + win)]
     if len(near) < 10:
         return None
     jerk = np.linalg.norm(np.diff(near[["x", "y", "z"]].values, axis=0), axis=1)
     if jerk.max() < 5:  # m/s² Sprung zwischen zwei Samples, sonst kein echtes Klatschen
         return None
     t_watch = near.epoch_ms.values[1:][np.argmax(jerk)]
-    return float(t_watch - t_audio)
+    off = float(t_watch - t_audio)
+    return off if abs(off) <= CLAP_MAX_OFFSET_S * 1000 else None
 
 
 # ---------- Auswertung ----------
@@ -320,7 +323,7 @@ def main():
         if not br.empty:
             br["epoch_ms"] += off
     else:
-        lines.append("Klatsch-Synchronisation: nicht gefunden, Startzeit ungeprüft")
+        lines.append("Klatsch-Synchronisation: nicht eindeutig gefunden, Startzeit aus Datei (± einige s)")
 
     # Anfang ignorieren und Geräusche während Bewegung der Uhr verwerfen (Rascheln ≠ Schnarchen/Pause)
     cut = per_s.epoch_ms.iloc[0] + args.skip_min * 60_000

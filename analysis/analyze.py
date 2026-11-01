@@ -132,7 +132,10 @@ def autocorr_rate(x, fs):
     peaks, _ = signal.find_peaks(ac[lo:hi])
     if not len(peaks):
         return np.nan, 0.0
-    k = lo + peaks[np.argmax(ac[lo:hi][peaks])]
+    # Kürzeste Periode nehmen, deren Peak fast so hoch ist wie der höchste – sonst gewinnt bei
+    # unregelmäßigem Atem gern das Doppelte der Periode (halbe Frequenz)
+    heights = ac[lo:hi][peaks]
+    k = lo + peaks[np.argmax(heights >= 0.8 * heights.max())]
     # Parabel durch den Peak für Auflösung unterhalb eines Samples
     a, b, c = ac[k - 1], ac[k], ac[k + 1]
     shift = 0.5 * (a - c) / (a - 2 * b + c) if (a - 2 * b + c) != 0 else 0.0
