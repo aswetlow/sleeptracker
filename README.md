@@ -81,6 +81,19 @@ Am Ende einer Atempause kommt typischerweise eine kurze Weckreaktion mit Pulsspr
 Wiederholt sich das alle 25–100 s mindestens 4-mal, markiert das Skript eine Episode, inkl. Anteil
 der Spitzen mit gleichzeitiger Bewegung. Das ist ein Hinweis, kein Apnoe-Nachweis und kein AHI.
 
+### Mehrere Nächte vergleichen
+Erst jede Nacht mit `analyze.py` auswerten, dann:
+```
+python nights.py ..\sessions\20261030_224900 ..\sessions\20261031_235707 ..\sessions\20261101_231037 --out nights.csv
+```
+Pro Nacht eine Spalte: Schlaf und Phasen (Fitbit), HRV, Ruhepuls, Puls im Schlaf und im Tiefschlaf,
+Atemfrequenz pro Phase, Bewegungen/h, Lagewechsel, SpO2, CVHR, Akku, Raumklima, Schritte am Vortag.
+Für A/B-Vergleiche (z. B. Mundpflaster) eine `notes.txt` in den Session-Ordner legen:
+```
+pflaster=ja
+notiz=Toilette 04:00
+```
+
 ## 5. Audio-Referenz vom Handy (optional, aber der größte Hebel)
 Ohne Referenz lassen sich die Schwellen nicht seriös einstellen. Die Handy-Aufnahme liefert sie.
 
