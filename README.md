@@ -130,6 +130,21 @@ python analysis/audio.py testnacht "testnacht/Aufnahme 2025-10-30 19.46.27.wav"
 Erzeugt 3 h mit Atmung 15→12/min, drei Bewegungen, Klatschen, Schnarchphase, 20 apnoe-artigen
 Zyklen und einer passenden Handy-Aufnahme (~170 MB WAV).
 
+## 6. PPG-Rohdaten testen (experimentell)
+`adb shell dumpsys sensorservice` zeigt auf der Pixel Watch 1 undokumentierte Google-Sensoren:
+`com.google.wear.sensor.ppg` (PPG Sensor, TI), `com.google.sensor.heart_rate_extended` und
+`com.google.sensor.ppg_controller`. Der Knopf **Start + PPG** schreibt sie zusätzlich roh mit
+(`raw_ppg.csv`, `raw_hr_ext.csv`, `raw_ppg_ctrl.csv`, Format `epoch_ms,accuracy,n,values` mit
+leerzeichengetrennten Werten) und legt `sensors.txt` mit allen Sensoren an.
+
+Erst kurz testen, nicht über Nacht (Datenmenge und Akku unbekannt): Uhr fest anlegen, **Start + PPG**,
+1–2 Minuten ruhig sitzen, Stopp, exportieren wie in Abschnitt 3, dann
+```
+python ppg_probe.py ..\sessions\<session> --plot
+```
+Das Skript zeigt Abtastrate, Werte pro Event, Statistik pro Kanal, ob ein Kanal eine Pulswelle
+enthält (Peak im Pulsband vs. HeartRate-Sensor) und ob Werte wie Schlagintervalle in ms aussehen.
+
 ## Grenzen (ehrlich)
 - **Atemfrequenz** wird nur in ruhigen Phasen geschätzt und hat einen Qualitätswert. Am Handgelenk
   ist das Signal sehr klein; erwarte viele unbrauchbare Fenster. Die Parameter sind nur an
@@ -139,6 +154,8 @@ Zyklen und einer passenden Handy-Aufnahme (~170 MB WAV).
   nach hörbarem Atmen, und Stillen über 120 s gelten als „zu leise“, nicht als Pause.
 - **CVHR** ersetzt keine Polysomnographie. Die Uhr glättet ihre BPM, Betablocker dämpfen die
   Pulsreaktion, und auch Schnarchen ohne Apnoe oder normale Weckreaktionen erzeugen Spitzen.
-- Wear OS liefert Drittanbieter-Apps nur BPM, keine RR-Intervalle oder PPG-Rohdaten. HRV geht also nicht.
+- Offiziell liefert Wear OS nur BPM. Die Pixel Watch meldet aber zusätzlich einen rohen „PPG Sensor“
+  und „HeartRate-Extended“ (nur `BODY_SENSORS` nötig). Ob die Daten an Dritt-Apps gehen und was drinsteht,
+  klärt der PPG-Test (Abschnitt 6). Bis dahin: keine HRV, keine Extrasystolen.
 - Akku: Puls dauerhaft + Wakelock kostet spürbar. `events.csv` zeigt, ob ein Wake-up-Accelerometer
   verfügbar war.

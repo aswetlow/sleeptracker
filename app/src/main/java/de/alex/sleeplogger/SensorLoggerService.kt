@@ -35,6 +35,14 @@ class SensorLoggerService : Service(), SensorEventListener {
     companion object {
         const val TAG = "SleepLogger"
         const val ACTION_STOP = "de.alex.sleeplogger.STOP"
+        const val EXTRA_RAW = "raw"
+        // Undokumentierte Google-Sensoren der Pixel Watch (siehe `adb shell dumpsys sensorservice`).
+        // Format unbekannt, daher roh: epoch_ms,accuracy,n,v0 v1 ... v(n-1)
+        val RAW_SENSORS = linkedMapOf(
+            "com.google.wear.sensor.ppg" to "raw_ppg.csv",
+            "com.google.sensor.heart_rate_extended" to "raw_hr_ext.csv",
+            "com.google.sensor.ppg_controller" to "raw_ppg_ctrl.csv",
+        )
         const val ACCEL_PERIOD_US = 40_000          // 25 Hz
         const val ACCEL_MAX_LATENCY_US = 10_000_000 // bis zu 10 s im FIFO puffern
         const val FLUSH_INTERVAL_MS = 30_000L
@@ -48,6 +56,8 @@ class SensorLoggerService : Service(), SensorEventListener {
             private set
         @Volatile var accelCount = 0L
             private set
+        @Volatile var rawCount = 0L
+            private set
     }
 
     private lateinit var sensorManager: SensorManager
@@ -59,6 +69,7 @@ class SensorLoggerService : Service(), SensorEventListener {
     private var gyroOut: BufferedWriter? = null
     private var hrOut: BufferedWriter? = null
     private var eventsOut: BufferedWriter? = null
+    private val rawOut = HashMap<Int, BufferedWriter>()   // Sensor-Typ -> Datei
 
     // Sensor-Timestamps sind elapsedRealtimeNanos; einmal gegen die Wanduhr verankert,
     // damit die Zeitreihe nicht springt, wenn die Uhrzeit nachts per NTP korrigiert wird.
@@ -67,6 +78,7 @@ class SensorLoggerService : Service(), SensorEventListener {
     private val flushRunnable = object : Runnable {
         override fun run() {
             accelOut?.flush(); gyroOut?.flush(); hrOut?.flush(); eventsOut?.flush()
+            rawOut.values.forEach { it.flush() }
             handler.postDelayed(this, FLUSH_INTERVAL_MS)
         }
     }
@@ -93,11 +105,11 @@ class SensorLoggerService : Service(), SensorEventListener {
         } else {
             startForeground(NOTIFICATION_ID, buildNotification())
         }
-        startLogging()
+        startLogging(intent?.getBooleanExtra(EXTRA_RAW, false) ?: false)
         return START_STICKY
     }
 
-    private fun startLogging() {
+    private fun startLogging(raw: Boolean) {
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
         thread = HandlerThread("sensor-writer").apply { start() }
         handler = Handler(thread.looper)
@@ -110,6 +122,15 @@ class SensorLoggerService : Service(), SensorEventListener {
         gyroOut = File(dir, "gyro.csv").bufferedWriter().apply { write("epoch_ms,x,y,z\n") }
         hrOut = File(dir, "hr.csv").bufferedWriter().apply { write("epoch_ms,bpm,accuracy\n") }
         eventsOut = File(dir, "events.csv").bufferedWriter().apply { write("epoch_ms,event\n") }
+        accelCount = 0; rawCount = 0
+
+        // Alle Sensoren mit Metadaten festhalten, kostet nichts und hilft beim Reverse-Engineering.
+        val all = sensorManager.getSensorList(Sensor.TYPE_ALL)
+        File(dir, "sensors.txt").writeText(all.joinToString("\n") {
+            "${it.name} | ${it.vendor} | type=${it.type} ${it.stringType} | wakeup=${it.isWakeUpSensor} | " +
+                "minDelay=${it.minDelay}us maxDelay=${it.maxDelay}us | range=${it.maximumRange} " +
+                "res=${it.resolution} | fifo=${it.fifoMaxEventCount} | mode=${it.reportingMode}"
+        } + "\n")
 
         // Wake-up-Accelerometer weckt die CPU selbst, wenn der FIFO voll ist.
         // Gibt es keins, halten wir einen Partial-Wakelock (kostet mehr Akku).
@@ -139,6 +160,18 @@ class SensorLoggerService : Service(), SensorEventListener {
             sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL, 0, handler)
         } ?: logEvent("no_heart_rate_sensor")
 
+        if (raw) {
+            for ((stringType, file) in RAW_SENSORS) {
+                val s = all.firstOrNull { it.stringType == stringType && !it.isWakeUpSensor }
+                if (s == null) { logEvent("raw_missing $stringType"); continue }
+                rawOut[s.type] = File(dir, file).bufferedWriter().apply { write("epoch_ms,accuracy,n,values\n") }
+                // 0 µs = so schnell, wie der Sensor kann
+                val ok = sensorManager.registerListener(this, s, 0, 0, handler)
+                logEvent("raw ${s.name} type=${s.type} minDelay=${s.minDelay}us registered=$ok")
+                if (!ok) rawOut.remove(s.type)?.close()
+            }
+        }
+
         handler.postDelayed(flushRunnable, FLUSH_INTERVAL_MS)
         handler.post(batteryRunnable)
         isRunning = true
@@ -160,6 +193,11 @@ class SensorLoggerService : Service(), SensorEventListener {
             Sensor.TYPE_HEART_RATE -> {
                 lastBpm = event.values[0]
                 hrOut?.write("$epochMs,${event.values[0]},${event.accuracy}\n")
+            }
+            else -> rawOut[event.sensor.type]?.let { w ->
+                val v = event.values
+                w.write("$epochMs,${event.accuracy},${v.size},${v.joinToString(" ")}\n")
+                rawCount++
             }
         }
     }
@@ -183,6 +221,7 @@ class SensorLoggerService : Service(), SensorEventListener {
                 handler.removeCallbacks(batteryRunnable)
                 logEvent("stop")
                 accelOut?.close(); gyroOut?.close(); hrOut?.close(); eventsOut?.close()
+                rawOut.values.forEach { it.close() }; rawOut.clear()
                 thread.quitSafely()
             }
             wakeLock?.takeIf { it.isHeld }?.release()

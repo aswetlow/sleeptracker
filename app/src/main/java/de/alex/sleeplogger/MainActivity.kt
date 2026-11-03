@@ -18,6 +18,8 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var status: TextView
     private lateinit var toggle: Button
+    private lateinit var rawButton: Button
+    private var startRaw = false
     private val ui = Handler(Looper.getMainLooper())
 
     private val requiredPermissions: Array<String>
@@ -29,7 +31,7 @@ class MainActivity : ComponentActivity() {
 
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
-            if (result.values.all { it }) startLogger()
+            if (result.values.all { it }) startLogger(startRaw)
             else status.text = "Berechtigung fehlt.\nIn Einstellungen › Apps erlauben."
         }
 
@@ -43,42 +45,50 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         status = TextView(this).apply { gravity = Gravity.CENTER; textSize = 14f }
-        toggle = Button(this).apply { setOnClickListener { onToggle() } }
+        toggle = Button(this).apply { setOnClickListener { onToggle(false) } }
+        // Zusätzlich die rohen PPG-Sensoren mitschreiben (erst als kurzer Test, Datenmenge unbekannt)
+        rawButton = Button(this).apply { text = "Start + PPG"; setOnClickListener { onToggle(true) } }
         setContentView(LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
             setPadding(24, 24, 24, 24)
             addView(status)
             addView(toggle)
+            addView(rawButton)
         })
     }
 
     override fun onResume() { super.onResume(); ui.post(refresh) }
     override fun onPause() { super.onPause(); ui.removeCallbacks(refresh) }
 
-    private fun onToggle() {
+    private fun onToggle(raw: Boolean) {
+        startRaw = raw
         if (SensorLoggerService.isRunning) {
             startService(Intent(this, SensorLoggerService::class.java)
                 .setAction(SensorLoggerService.ACTION_STOP))
         } else if (requiredPermissions.all { checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }) {
-            startLogger()
+            startLogger(raw)
         } else {
             permissionLauncher.launch(requiredPermissions)
         }
     }
 
-    private fun startLogger() {
-        startForegroundService(Intent(this, SensorLoggerService::class.java))
+    private fun startLogger(raw: Boolean) {
+        startForegroundService(Intent(this, SensorLoggerService::class.java)
+            .putExtra(SensorLoggerService.EXTRA_RAW, raw))
     }
 
     private fun render() {
         if (SensorLoggerService.isRunning) {
             status.text = "Läuft\nPuls: ${SensorLoggerService.lastBpm.toInt()} bpm\n" +
-                "Accel-Samples: ${SensorLoggerService.accelCount}"
+                "Accel-Samples: ${SensorLoggerService.accelCount}" +
+                (if (SensorLoggerService.rawCount > 0) "\nPPG-Samples: ${SensorLoggerService.rawCount}" else "")
             toggle.text = "Stopp"
+            rawButton.visibility = android.view.View.GONE
         } else {
             status.text = "Bereit"
             toggle.text = "Start"
+            rawButton.visibility = android.view.View.VISIBLE
         }
     }
 }
