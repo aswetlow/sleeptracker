@@ -158,6 +158,25 @@ python ppg_probe.py ..\sessions\<session> --plot
 Das Skript zeigt Abtastrate, Werte pro Event, Statistik pro Kanal, ob ein Kanal eine Pulswelle
 enthält (Peak im Pulsband vs. HeartRate-Sensor) und ob Werte wie Schlagintervalle in ms aussehen.
 
+## 7. Atempausen-Test (willkürliches Luftanhalten)
+Prüft, ob die Uhr eine Atempause überhaupt sieht. Ablauf (~9 min, am besten mit **Start + PPG**):
+1. Auf dem Rücken liegen, Uhrarm locker neben dem Körper, starten, 2 min ruhig atmen.
+2. Handgelenk 2 s kräftig schütteln und gleichzeitig eine Stoppuhr starten (Zeitmarke).
+3. Ab 0:30 fünfmal: 20 s Luft anhalten (nach normalem Ausatmen), 40 s normal atmen.
+4. Bei ~5:30 nochmal schütteln, Stopp.
+```
+python breath_hold.py ..\sessions\<session> --plot
+```
+Findet die Zeitmarke automatisch (sonst `--marker HH:MM:SS`), filtert die Atembewegung (0,1–0,7 Hz,
+Gyro und Accelerometer getrennt), berechnet die Amplitude über 5 s und markiert Pausen, in denen sie
+unter 35 % des normalen Atmens fällt (≥ 8 s). Ausgabe: erkannte Pausen von 5, Fehlalarme, Zeitversatz,
+Puls vor/während/nach den Pausen und, falls PPG-Rohdaten vorhanden, dasselbe für die Atemmodulation
+der Pulswelle. Andere Abläufe: `--first-s`, `--hold-s`, `--cycle-s`, `--holds`.
+
+Grenze: Luftanhalten heißt, der Brustkorb steht still (wie bei einer zentralen Pause). Bei einer
+obstruktiven Apnoe arbeitet der Brustkorb weiter gegen die verschlossenen Atemwege. Besteht die Uhr
+den Test nicht, erkennt sie auch keine echten Apnoen. Besteht sie ihn, ist das nur ein erster Schritt.
+
 ## Grenzen (ehrlich)
 - **Atemfrequenz** wird nur in ruhigen Phasen geschätzt und hat einen Qualitätswert. Am Handgelenk
   ist das Signal sehr klein; erwarte viele unbrauchbare Fenster. Die Parameter sind nur an
