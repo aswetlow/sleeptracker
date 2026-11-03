@@ -54,6 +54,7 @@ class State:
         self.connected = False
         self.last_rx = 0.0
         self.lines = 0
+        self.counts = {}
         self.breath = {"t": [], "y": [], "rate": None, "quality": 0.0}
         self.activity = {"t": [], "y": []}
 
@@ -63,6 +64,7 @@ class State:
         if not parts or parts[0] == "k":
             return
         kind = parts[0]
+        self.counts[kind] = self.counts.get(kind, 0) + 1
         try:
             t = float(parts[1])
             with self.lock:
@@ -214,6 +216,7 @@ class State:
                 "now": now,
                 "connected": time.time() - self.last_rx < 3,
                 "lines": self.lines,
+                "counts": dict(self.counts),
                 "ppg": {"t": pt[::k], "y": [round(v, 1) for v in py[::k]]},  # bis 1 s alt, s. u.
                 "beats": [b for b in self.beats if pt and b >= pt[0]],
                 "ibis": ibis,
@@ -445,7 +448,7 @@ function vlines(g,ts,color,t0){if(!g)return;g.x.strokeStyle=color;g.x.lineWidth=
 const fmt=(v,d=0)=>v==null?'–':Number(v).toFixed(d);
 async function tick(){try{const d=await (await fetch('/data')).json();
  document.getElementById('dot').classList.toggle('on',d.connected);
- document.getElementById('status').textContent=d.connected?`verbunden · ${d.lines} Messwerte`:'warte auf Uhr …';
+ document.getElementById('status').textContent=d.connected?`verbunden · Pulswelle ${d.counts.p||0} · Accel ${d.counts.a||0} · Gyro ${d.counts.g||0} · Puls ${d.counts.h||0}`+(d.counts.p?'':' · keine Pulswelle: auf der Uhr mit „Start + PPG“ starten'):'warte auf Uhr …';
  const n=d.numbers;hr_ppg.textContent=fmt(n.hr_ppg);hr_sensor.textContent=fmt(n.hr_sensor);rmssd.textContent=fmt(n.rmssd);
  breath.textContent=n.breath?`${fmt(n.breath,1)} (${fmt(n.breath_q,2)})`:'–';cand.textContent=`${n.candidates_5min} / ${n.felt_5min}`;
  const now=d.now;
