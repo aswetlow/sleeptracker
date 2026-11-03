@@ -99,6 +99,7 @@ class MainActivity : ComponentActivity() {
             rawButton.visibility = android.view.View.GONE
             markButton.visibility = android.view.View.VISIBLE
             status.append("\nGespürt: ${SensorLoggerService.markCount}")
+            if (SensorLoggerService.liveConnected) status.append("\nLive: Laptop verbunden")
             // Im PPG-Test die ersten 20 min Bildschirm anlassen, damit "Gespürt" mit einem Tippen geht.
             // Danach (z. B. PPG über Nacht) wieder normal ausgehen lassen.
             val keepOn = SensorLoggerService.rawMode &&

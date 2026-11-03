@@ -199,6 +199,23 @@ Grenze: Luftanhalten heißt, der Brustkorb steht still (wie bei einer zentralen 
 obstruktiven Apnoe arbeitet der Brustkorb weiter gegen die verschlossenen Atemwege. Besteht die Uhr
 den Test nicht, erkennt sie auch keine echten Apnoen. Besteht sie ihn, ist das nur ein erster Schritt.
 
+## 8. Live-Dashboard
+Die Uhr schickt ihre Messwerte live über den ADB-Tunnel an den Laptop (kein Bluetooth, keine
+Firewall-Freigabe nötig, Verzögerung < 1 s). Die Aufzeichnung auf der Uhr läuft unabhängig davon weiter.
+```
+python live.py --serial 192.168.178.35:<Port>     # richtet adb reverse ein, öffnet den Browser
+python live.py --demo                              # ohne Uhr, synthetische Daten
+python live.py --replay ..\sessions\<session>      # gespeicherte Session abspielen (--speed 4)
+```
+Auf der Uhr **Start + PPG** (ohne PPG fehlt die Pulswelle). Nach spätestens 3 s steht auf der Uhr
+„Live: Laptop verbunden“. Angezeigt: Pulswelle mit erkannten Schlägen, Schlagintervalle der letzten
+5 min (rot = Extrasystolen-Kandidat, grau = Bewegung, grün = Gespürt, lila = Pulssensor),
+Atembewegung, Bewegung, Puls, RMSSD (60 s), Atemzüge/min. Die Live-Erkennung ist einfacher als
+`ppg.py` und meldet mehr Fehlalarme. Maßgeblich ist die Auswertung hinterher.
+
+Kostet Akku (WLAN bleibt aktiv), also nicht über Nacht. Geht der Uhr-Bildschirm aus, kann das WLAN
+schlafen. Dann bricht die Live-Verbindung ab, die Aufzeichnung läuft aber weiter.
+
 ## Grenzen (ehrlich)
 - **Atemfrequenz** wird nur in ruhigen Phasen geschätzt und hat einen Qualitätswert. Am Handgelenk
   ist das Signal sehr klein; erwarte viele unbrauchbare Fenster. Die Parameter sind nur an

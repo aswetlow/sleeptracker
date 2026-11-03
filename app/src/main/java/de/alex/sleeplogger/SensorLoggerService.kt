@@ -66,6 +66,8 @@ class SensorLoggerService : Service(), SensorEventListener {
             private set
         @Volatile var startedAtMs = 0L
             private set
+        @Volatile var liveConnected = false
+            private set
     }
 
     private lateinit var sensorManager: SensorManager
@@ -78,6 +80,7 @@ class SensorLoggerService : Service(), SensorEventListener {
     private var hrOut: BufferedWriter? = null
     private var eventsOut: BufferedWriter? = null
     private val rawOut = HashMap<Int, BufferedWriter>()   // Sensor-Typ -> Datei
+    @Volatile private var live: LiveStream? = null
 
     // Sensor-Timestamps sind elapsedRealtimeNanos; einmal gegen die Wanduhr verankert,
     // damit die Zeitreihe nicht springt, wenn die Uhrzeit nachts per NTP korrigiert wird.
@@ -88,6 +91,15 @@ class SensorLoggerService : Service(), SensorEventListener {
             accelOut?.flush(); gyroOut?.flush(); hrOut?.flush(); eventsOut?.flush()
             rawOut.values.forEach { it.flush() }
             handler.postDelayed(this, FLUSH_INTERVAL_MS)
+        }
+    }
+
+    // Solange der Laptop zuschaut: Sensor-FIFOs jede Sekunde leeren, sonst kämen Accel/Gyro in 10-s-Blöcken
+    private val liveRunnable = object : Runnable {
+        override fun run() {
+            liveConnected = live?.connected == true
+            if (liveConnected) sensorManager.flush(this@SensorLoggerService)
+            handler.postDelayed(this, 1000)
         }
     }
 
@@ -109,7 +121,7 @@ class SensorLoggerService : Service(), SensorEventListener {
         if (intent?.action == ACTION_MARK) {
             // Zeitpunkt des Tippens, nicht der Verarbeitung; geschrieben wird auf dem Writer-Thread
             val at = intent.getLongExtra(EXTRA_TIME, System.currentTimeMillis())
-            if (isRunning) handler.post { logEvent("felt", at); markCount++ }
+            if (isRunning) handler.post { logEvent("felt", at); markCount++; live?.send("e,$at,felt\n") }
             else stopSelf()
             return if (isRunning) START_STICKY else START_NOT_STICKY
         }
@@ -188,8 +200,10 @@ class SensorLoggerService : Service(), SensorEventListener {
             }
         }
 
+        live = LiveStream().also { it.start() }
         handler.postDelayed(flushRunnable, FLUSH_INTERVAL_MS)
         handler.post(batteryRunnable)
+        handler.post(liveRunnable)
         isRunning = true
         Log.i(TAG, "logging to ${dir.absolutePath}")
     }
@@ -200,22 +214,27 @@ class SensorLoggerService : Service(), SensorEventListener {
             Sensor.TYPE_ACCELEROMETER -> {
                 val v = event.values
                 accelOut?.write("$epochMs,${v[0]},${v[1]},${v[2]}\n")
+                live?.send("a,$epochMs,${v[0]},${v[1]},${v[2]}\n")
                 accelCount++
             }
             Sensor.TYPE_GYROSCOPE -> {
                 val v = event.values
                 gyroOut?.write("$epochMs,${v[0]},${v[1]},${v[2]}\n")
+                live?.send("g,$epochMs,${v[0]},${v[1]},${v[2]}\n")
             }
             Sensor.TYPE_HEART_RATE -> {
                 lastBpm = event.values[0]
                 hrOut?.write("$epochMs,${event.values[0]},${event.accuracy}\n")
+                live?.send("h,$epochMs,${event.values[0]}\n")
             }
             else -> rawOut[event.sensor.type]?.let { w ->
                 // Hinten stehen meist nur Nullen (PPG: 9 von 16 Werten) – die sparen wir uns
                 val v = event.values
                 var n = v.size
                 while (n > 1 && v[n - 1] == 0f) n--
-                w.write("$epochMs,${event.accuracy},$n,${v.take(n).joinToString(" ")}\n")
+                val joined = v.take(n).joinToString(" ")
+                w.write("$epochMs,${event.accuracy},$n,$joined\n")
+                if (event.sensor.stringType == "com.google.wear.sensor.ppg") live?.send("p,$epochMs,$joined\n")
                 rawCount++
             }
         }
@@ -234,6 +253,8 @@ class SensorLoggerService : Service(), SensorEventListener {
             sensorManager.unregisterListener(this)
             handler.removeCallbacks(flushRunnable)
             handler.removeCallbacks(batteryRunnable)
+            handler.removeCallbacks(liveRunnable)
+            live?.stop(); live = null; liveConnected = false
             // Schreiben auf dem Writer-Thread abschließen, damit keine Zeilen verloren gehen.
             handler.post {
                 batteryRunnable.run()
