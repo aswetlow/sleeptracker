@@ -195,8 +195,11 @@ class SensorLoggerService : Service(), SensorEventListener {
                 hrOut?.write("$epochMs,${event.values[0]},${event.accuracy}\n")
             }
             else -> rawOut[event.sensor.type]?.let { w ->
+                // Hinten stehen meist nur Nullen (PPG: 9 von 16 Werten) – die sparen wir uns
                 val v = event.values
-                w.write("$epochMs,${event.accuracy},${v.size},${v.joinToString(" ")}\n")
+                var n = v.size
+                while (n > 1 && v[n - 1] == 0f) n--
+                w.write("$epochMs,${event.accuracy},$n,${v.take(n).joinToString(" ")}\n")
                 rawCount++
             }
         }

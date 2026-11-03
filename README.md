@@ -158,6 +158,22 @@ python ppg_probe.py ..\sessions\<session> --plot
 Das Skript zeigt Abtastrate, Werte pro Event, Statistik pro Kanal, ob ein Kanal eine Pulswelle
 enthält (Peak im Pulsband vs. HeartRate-Sensor) und ob Werte wie Schlagintervalle in ms aussehen.
 
+**Ergebnis des ersten Tests (03.11.2026):** `raw_ppg.csv` liefert 100 Hz mit 16 Werten pro Event, davon
+7 belegt. v6 zeigt die Pulswelle am saubersten (v1, v3, v4 ebenfalls Licht-Kanäle, v0 vermutlich
+Umgebungslicht, v2/v5 Status mit Sentinel-Werten −59000/−23000). `raw_hr_ext.csv` enthält nur bpm und einen
+Statuswert, keine Schlagintervalle. Nullen am Ende werden inzwischen nicht mehr geschrieben (~40 → ~20 MB/h).
+
+Schlag-zu-Schlag-Auswertung:
+```
+python ppg.py ..\sessions\<session> --plot
+```
+Wählt den Kanal mit der deutlichsten Pulswelle, erkennt jeden Schlag, verwirft Abschnitte mit Bewegung
+und Schläge mit untypischer Form, berechnet SDNN/RMSSD aus sauberen Intervallen und listet
+Extrasystolen-Kandidaten: „vorzeitig“ (kurzes Intervall + Pause, zusammen ≈ 2 Intervalle) und
+„Puls fehlt“ (ein Intervall ≈ doppelt so lang). Ausgabe: `ppg_summary.txt`, `ppg_beats.csv`,
+`ppg_events.csv`, `ppg.png` mit Ausschnitt pro Kandidat. Ohne zeitgleiches EKG sind das Kandidaten,
+keine Befunde.
+
 ## 7. Atempausen-Test (willkürliches Luftanhalten)
 Prüft, ob die Uhr eine Atempause überhaupt sieht. Ablauf (~9 min, am besten mit **Start + PPG**):
 1. Auf dem Rücken liegen, Uhrarm locker neben dem Körper, starten, 2 min ruhig atmen.
