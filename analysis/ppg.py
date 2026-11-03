@@ -140,6 +140,48 @@ def hrv(beats):
     return nn, (nn.ibi_ms.std(), np.sqrt(np.mean(d.dropna() ** 2)) if d.notna().any() else np.nan)
 
 
+def felt_markers(session: Path):
+    p = session / "events.csv"
+    if not p.exists():
+        return np.array([])
+    ev = pd.read_csv(p)
+    return np.sort(ev.epoch_ms[ev.event.astype(str).str.strip('"') == "felt"].values.astype(float))
+
+
+def check_felt(markers, beats, events, before_s=8.0, after_s=1.0):
+    """
+    Pro "Gespürt"-Marke: Muster aus vorzeitigem Schlag/Pause in den before_s Sekunden davor?
+    Die Bewegung beim Tippen kommt NACH dem Herzstolpern, daher wird hier die Bewegungsmaske ignoriert
+    und nur bis kurz vor die Marke geschaut. Referenz-Intervall: Median der sauberen Schläge der Minute davor.
+    """
+    rows = []
+    for m in markers:
+        ref = beats[(beats.epoch_ms > m - 60_000) & (beats.epoch_ms < m - before_s * 1000) & beats.clean].ibi_ms
+        if len(ref) < 10:
+            ref = beats[beats.clean].ibi_ms
+        med = ref.median()
+        win = beats[(beats.epoch_ms > m - before_s * 1000) & (beats.epoch_ms <= m + after_s * 1000)]
+        r = (win.ibi_ms / med).values
+        found, dt = "", np.nan
+        for i in range(len(r)):
+            nxt = r[i + 1] if i + 1 < len(r) else np.nan
+            if r[i] < 0.8 and nxt > 1.1 and 1.75 <= r[i] + nxt <= 2.3:
+                found = "vorzeitig"
+            elif 1.75 <= r[i] <= 2.3:
+                found = "Puls fehlt"
+            elif r[i] > 1.3 or r[i] < 0.75:
+                found = "unregelmäßig"
+            if found:
+                dt = (win.epoch_ms.iloc[i] - m) / 1000
+                break
+        auto = events[(events.epoch_ms > m - before_s * 1000) & (events.epoch_ms <= m + after_s * 1000)] \
+            if not events.empty else events
+        rows.append({"epoch_ms": m, "muster": found or "nichts", "sekunden_vor_marke": dt,
+                     "kandidat_automatisch": len(auto) > 0, "median_ibi_ms": med,
+                     "beats_im_fenster": len(win)})
+    return pd.DataFrame(rows)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("session", type=Path)
@@ -182,6 +224,26 @@ def main():
                          f"Zwischenwelle {e.zwischenwelle_rel}, Folgeschlag ×{e.folgeschlag_amp_rel}")
         lines.append("Hinweis: Kandidaten, keine Diagnose. 'Puls fehlt' kann auch ein verpasster Schlag sein.")
 
+    markers = felt_markers(args.session)
+    felt = check_felt(markers, beats, events) if len(markers) else pd.DataFrame()
+    if len(felt):
+        hit = felt.muster.isin(["vorzeitig", "Puls fehlt"])
+        irr = felt.muster == "unregelmäßig"
+        # Wie oft fände man das Muster zufällig in einem 9-s-Fenster? Grob über die Kandidatenrate.
+        minutes = len(beats) and (beats.epoch_ms.iloc[-1] - beats.epoch_ms.iloc[0]) / 60000
+        chance = 1 - np.exp(-len(events) / max(minutes, 1e-9) * 9 / 60) if minutes else np.nan
+        lines.append(f"Gespürt: {len(felt)}× – davon {hit.sum()} mit Extrasystolen-Muster in den 8 s davor, "
+                     f"{irr.sum()} nur unregelmäßig, {(~hit & ~irr).sum()} ohne Auffälligkeit "
+                     f"(Zufallstreffer-Wahrscheinlichkeit pro Fenster ≈ {chance * 100:.0f} %)")
+        for f in felt.itertuples():
+            ts = pd.to_datetime(f.epoch_ms, unit="ms", utc=True).tz_convert(TZ).strftime("%H:%M:%S")
+            lines.append(f"  {ts}: {f.muster}" + (f" ({-f.sekunden_vor_marke:.1f} s vorher)"
+                                                  if np.isfinite(f.sekunden_vor_marke) else ""))
+        auto_hit = sum(((markers > e - 1000) & (markers < e + 8000)).any() for e in events.epoch_ms) \
+            if not events.empty else 0
+        lines.append(f"Automatische Kandidaten ohne Gespürt-Marke in den 8 s danach: {len(events) - auto_hit}")
+        felt.to_csv(args.session / "ppg_felt.csv", index=False)
+
     text = "\n".join(lines)
     print(text)
     (args.session / "ppg_summary.txt").write_text(text + "\n", encoding="utf-8")
@@ -192,7 +254,10 @@ def main():
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
-        n_ev = min(len(events), 8)
+        snips = [(e.epoch_ms, e.art, False) for e in events.itertuples()]
+        snips += [(m, "Gespürt", True) for m in markers]
+        snips = sorted(snips)[:12]
+        n_ev = len(snips)
         fig = plt.figure(figsize=(12, 4 + 2 * ((n_ev + 1) // 2)))
         gs = fig.add_gridspec(2 + (n_ev + 1) // 2, 2)
         ax = fig.add_subplot(gs[0:2, :])
@@ -203,15 +268,21 @@ def main():
         ax.plot(tt[f], beats.ibi_ms[f], "rx", ms=6, label="Kandidat")
         ax.set_ylim(300, 2000)
         ax.set_ylabel("Schlagintervall ms")
+        for m in markers:
+            ax.axvline(pd.to_datetime(m, unit="ms", utc=True).tz_convert(TZ).tz_localize(None),
+                       color="tab:green", lw=0.8)
         ax.legend(fontsize=8)
-        for k, e in enumerate(events.head(n_ev).itertuples()):
+        ax.set_title("grüne Linie = Gespürt", fontsize=8)
+        for k, (t0, label, is_marker) in enumerate(snips):
             a = fig.add_subplot(gs[2 + k // 2, k % 2])
-            sel = (t_ms > e.epoch_ms - 4000) & (t_ms < e.epoch_ms + 3000)
-            a.plot((t_ms[sel] - e.epoch_ms) / 1000, y[sel], lw=0.8)
-            bp = beats[(beats.epoch_ms > e.epoch_ms - 4000) & (beats.epoch_ms < e.epoch_ms + 3000)]
-            a.plot((bp.epoch_ms - e.epoch_ms) / 1000, np.interp(bp.epoch_ms, t_ms, y), "r.", ms=4)
-            a.set_title(f"{pd.to_datetime(e.epoch_ms, unit='ms', utc=True).tz_convert(TZ):%H:%M:%S} {e.art}",
-                        fontsize=8)
+            lo, hi = (8000, 2000) if is_marker else (4000, 3000)
+            sel = (t_ms > t0 - lo) & (t_ms < t0 + hi)
+            a.plot((t_ms[sel] - t0) / 1000, y[sel], lw=0.8)
+            bp = beats[(beats.epoch_ms > t0 - lo) & (beats.epoch_ms < t0 + hi)]
+            a.plot((bp.epoch_ms - t0) / 1000, np.interp(bp.epoch_ms, t_ms, y), "r.", ms=4)
+            if is_marker:
+                a.axvline(0, color="tab:green", lw=1)
+            a.set_title(f"{pd.to_datetime(t0, unit='ms', utc=True).tz_convert(TZ):%H:%M:%S} {label}", fontsize=8)
             a.tick_params(labelsize=7)
         fig.tight_layout()
         out = args.session / "ppg.png"

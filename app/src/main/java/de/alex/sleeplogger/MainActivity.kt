@@ -8,6 +8,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
+import android.view.WindowManager
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -19,6 +20,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var status: TextView
     private lateinit var toggle: Button
     private lateinit var rawButton: Button
+    private lateinit var markButton: Button
     private var startRaw = false
     private val ui = Handler(Looper.getMainLooper())
 
@@ -48,6 +50,15 @@ class MainActivity : ComponentActivity() {
         toggle = Button(this).apply { setOnClickListener { onToggle(false) } }
         // Zusätzlich die rohen PPG-Sensoren mitschreiben (erst als kurzer Test, Datenmenge unbekannt)
         rawButton = Button(this).apply { text = "Start + PPG"; setOnClickListener { onToggle(true) } }
+        // Extrasystole gespürt -> Zeitmarke in events.csv ("felt"), als Referenz für ppg.py
+        markButton = Button(this).apply {
+            text = "Gespürt"
+            setOnClickListener {
+                startService(Intent(this@MainActivity, SensorLoggerService::class.java)
+                    .setAction(SensorLoggerService.ACTION_MARK)
+                    .putExtra(SensorLoggerService.EXTRA_TIME, System.currentTimeMillis()))
+            }
+        }
         setContentView(LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
@@ -55,6 +66,7 @@ class MainActivity : ComponentActivity() {
             addView(status)
             addView(toggle)
             addView(rawButton)
+            addView(markButton)
         })
     }
 
@@ -85,10 +97,20 @@ class MainActivity : ComponentActivity() {
                 (if (SensorLoggerService.rawCount > 0) "\nPPG-Samples: ${SensorLoggerService.rawCount}" else "")
             toggle.text = "Stopp"
             rawButton.visibility = android.view.View.GONE
+            markButton.visibility = android.view.View.VISIBLE
+            status.append("\nGespürt: ${SensorLoggerService.markCount}")
+            // Im PPG-Test die ersten 20 min Bildschirm anlassen, damit "Gespürt" mit einem Tippen geht.
+            // Danach (z. B. PPG über Nacht) wieder normal ausgehen lassen.
+            val keepOn = SensorLoggerService.rawMode &&
+                System.currentTimeMillis() - SensorLoggerService.startedAtMs < 20 * 60_000L
+            if (keepOn) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         } else {
             status.text = "Bereit"
             toggle.text = "Start"
             rawButton.visibility = android.view.View.VISIBLE
+            markButton.visibility = android.view.View.GONE
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         }
     }
 }

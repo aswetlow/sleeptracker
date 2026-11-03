@@ -174,6 +174,12 @@ Extrasystolen-Kandidaten: „vorzeitig“ (kurzes Intervall + Pause, zusammen �
 `ppg_events.csv`, `ppg.png` mit Ausschnitt pro Kandidat. Ohne zeitgleiches EKG sind das Kandidaten,
 keine Befunde.
 
+**Gespürte Extrasystolen als Referenz:** Während einer Aufnahme erscheint der Knopf **Gespürt**. Jedes
+Mal, wenn du ein Stolpern spürst, sofort mit der anderen Hand antippen (der Arm mit der Uhr bleibt
+liegen). Das schreibt `felt` mit Zeitstempel in `events.csv`. Im PPG-Modus bleibt der Bildschirm die
+ersten 20 min an. `ppg.py` prüft dann pro Marke die 8 s davor auf das Muster (vorzeitig / Puls fehlt),
+nennt die Zufallstreffer-Wahrscheinlichkeit und zählt automatische Kandidaten ohne Marke (`ppg_felt.csv`).
+
 ## 7. Atempausen-Test (willkürliches Luftanhalten)
 Prüft, ob die Uhr eine Atempause überhaupt sieht. Ablauf (~9 min, am besten mit **Start + PPG**):
 1. Auf dem Rücken liegen, Uhrarm locker neben dem Körper, starten, 2 min ruhig atmen.

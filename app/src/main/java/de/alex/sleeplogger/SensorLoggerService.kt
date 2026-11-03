@@ -36,6 +36,8 @@ class SensorLoggerService : Service(), SensorEventListener {
         const val TAG = "SleepLogger"
         const val ACTION_STOP = "de.alex.sleeplogger.STOP"
         const val EXTRA_RAW = "raw"
+        const val ACTION_MARK = "de.alex.sleeplogger.MARK"
+        const val EXTRA_TIME = "time"
         // Undokumentierte Google-Sensoren der Pixel Watch (siehe `adb shell dumpsys sensorservice`).
         // Format unbekannt, daher roh: epoch_ms,accuracy,n,v0 v1 ... v(n-1)
         val RAW_SENSORS = linkedMapOf(
@@ -57,6 +59,12 @@ class SensorLoggerService : Service(), SensorEventListener {
         @Volatile var accelCount = 0L
             private set
         @Volatile var rawCount = 0L
+            private set
+        @Volatile var rawMode = false
+            private set
+        @Volatile var markCount = 0
+            private set
+        @Volatile var startedAtMs = 0L
             private set
     }
 
@@ -98,6 +106,13 @@ class SensorLoggerService : Service(), SensorEventListener {
             stopSelf()
             return START_NOT_STICKY
         }
+        if (intent?.action == ACTION_MARK) {
+            // Zeitpunkt des Tippens, nicht der Verarbeitung; geschrieben wird auf dem Writer-Thread
+            val at = intent.getLongExtra(EXTRA_TIME, System.currentTimeMillis())
+            if (isRunning) handler.post { logEvent("felt", at); markCount++ }
+            else stopSelf()
+            return if (isRunning) START_STICKY else START_NOT_STICKY
+        }
         if (isRunning) return START_STICKY
 
         if (Build.VERSION.SDK_INT >= 34) {
@@ -122,7 +137,8 @@ class SensorLoggerService : Service(), SensorEventListener {
         gyroOut = File(dir, "gyro.csv").bufferedWriter().apply { write("epoch_ms,x,y,z\n") }
         hrOut = File(dir, "hr.csv").bufferedWriter().apply { write("epoch_ms,bpm,accuracy\n") }
         eventsOut = File(dir, "events.csv").bufferedWriter().apply { write("epoch_ms,event\n") }
-        accelCount = 0; rawCount = 0
+        accelCount = 0; rawCount = 0; markCount = 0; rawMode = raw
+        startedAtMs = System.currentTimeMillis()
 
         // Alle Sensoren mit Metadaten festhalten, kostet nichts und hilft beim Reverse-Engineering.
         val all = sensorManager.getSensorList(Sensor.TYPE_ALL)
@@ -209,8 +225,8 @@ class SensorLoggerService : Service(), SensorEventListener {
         logEvent("accuracy ${sensor.type} $accuracy")
     }
 
-    private fun logEvent(text: String) {
-        eventsOut?.write("${System.currentTimeMillis()},\"$text\"\n")
+    private fun logEvent(text: String, atMs: Long = System.currentTimeMillis()) {
+        eventsOut?.write("$atMs,\"$text\"\n")
     }
 
     override fun onDestroy() {
