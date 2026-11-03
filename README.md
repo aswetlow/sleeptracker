@@ -208,7 +208,7 @@ python live.py --demo                              # ohne Uhr, synthetische Date
 python live.py --replay ..\sessions\<session>      # gespeicherte Session abspielen (--speed 4)
 ```
 Auf der Uhr **Start + PPG** (ohne PPG fehlt die Pulswelle). Nach spätestens 3 s steht auf der Uhr
-„Live: Laptop verbunden“. Angezeigt: Pulswelle mit erkannten Schlägen, Schlagintervalle der letzten
+„Live ✓“ (und „PPG …k“, falls mit PPG gestartet). Angezeigt: Pulswelle mit erkannten Schlägen, Schlagintervalle der letzten
 5 min (rot = Extrasystolen-Kandidat, grau = Bewegung, grün = Gespürt, lila = Pulssensor),
 Atembewegung, Bewegung, Puls, RMSSD (60 s), Atemzüge/min. Die Live-Erkennung ist einfacher als
 `ppg.py` und meldet mehr Fehlalarme. Maßgeblich ist die Auswertung hinterher.

@@ -11,6 +11,7 @@ import android.view.Gravity
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
@@ -46,28 +47,46 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        status = TextView(this).apply { gravity = Gravity.CENTER; textSize = 14f }
+        val dm = resources.displayMetrics
+        status = TextView(this).apply { gravity = Gravity.CENTER; textSize = 12f; setPadding(0, 8, 0, 8) }
         toggle = Button(this).apply { setOnClickListener { onToggle(false) } }
         // Zusätzlich die rohen PPG-Sensoren mitschreiben (erst als kurzer Test, Datenmenge unbekannt)
         rawButton = Button(this).apply { text = "Start + PPG"; setOnClickListener { onToggle(true) } }
         // Extrasystole gespürt -> Zeitmarke in events.csv ("felt"), als Referenz für ppg.py
         markButton = Button(this).apply {
             text = "Gespürt"
+            textSize = 18f
+            minimumHeight = (dm.heightPixels * 0.28).toInt()   // groß, damit man ihn blind trifft
             setOnClickListener {
                 startService(Intent(this@MainActivity, SensorLoggerService::class.java)
                     .setAction(SensorLoggerService.ACTION_MARK)
                     .putExtra(SensorLoggerService.EXTRA_TIME, System.currentTimeMillis()))
             }
         }
-        setContentView(LinearLayout(this).apply {
+        // Rundes Display: seitlich und oben/unten Rand lassen, alles in einer ScrollView
+        // (Wischen oder Krone). Reihenfolge: Gespürt oben, Status, Stopp/Start unten.
+        val padX = (dm.widthPixels * 0.12).toInt()
+        val padY = (dm.heightPixels * 0.14).toInt()
+        val column = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER
-            setPadding(24, 24, 24, 24)
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(padX, padY, padX, padY)
+            addView(markButton, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT))
             addView(status)
-            addView(toggle)
-            addView(rawButton)
-            addView(markButton)
-        })
+            addView(toggle, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT))
+            addView(rawButton, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT))
+        }
+        val scroll = ScrollView(this).apply {
+            isFillViewport = true
+            isVerticalScrollBarEnabled = true
+            isFocusableInTouchMode = true      // nötig, damit die Krone (Rotary) scrollt
+            addView(column)
+        }
+        setContentView(scroll)
+        scroll.requestFocus()
     }
 
     override fun onResume() { super.onResume(); ui.post(refresh) }
@@ -92,14 +111,13 @@ class MainActivity : ComponentActivity() {
 
     private fun render() {
         if (SensorLoggerService.isRunning) {
-            status.text = "Läuft\nPuls: ${SensorLoggerService.lastBpm.toInt()} bpm\n" +
-                "Accel-Samples: ${SensorLoggerService.accelCount}" +
-                (if (SensorLoggerService.rawCount > 0) "\nPPG-Samples: ${SensorLoggerService.rawCount}" else "")
+            // kurz halten, damit "Gespürt" und "Stopp" ohne Scrollen auf den Bildschirm passen
+            status.text = "${SensorLoggerService.lastBpm.toInt()} bpm · Gespürt ${SensorLoggerService.markCount}\n" +
+                (if (SensorLoggerService.rawMode) "PPG ${SensorLoggerService.rawCount / 1000}k" else "ohne PPG") +
+                (if (SensorLoggerService.liveConnected) " · Live ✓" else "")
             toggle.text = "Stopp"
             rawButton.visibility = android.view.View.GONE
             markButton.visibility = android.view.View.VISIBLE
-            status.append("\nGespürt: ${SensorLoggerService.markCount}")
-            if (SensorLoggerService.liveConnected) status.append("\nLive: Laptop verbunden")
             // Im PPG-Test die ersten 20 min Bildschirm anlassen, damit "Gespürt" mit einem Tippen geht.
             // Danach (z. B. PPG über Nacht) wieder normal ausgehen lassen.
             val keepOn = SensorLoggerService.rawMode &&
