@@ -38,6 +38,19 @@ Port unter „Kabelloses Debugging“ auf der Uhr oder per `adb devices` nachseh
 cmd /c "adb -s 192.168.178.35:44691 exec-out run-as de.alex.sleeplogger tar c -C files sessions > sessions.tar"
 ```
 
+Nur eine Nacht holen statt aller:
+```
+cmd /c "adb -s <IP:Port> exec-out run-as de.alex.sleeplogger tar c -C files sessions/20261103_225540 > session.tar"
+tar xf session.tar
+```
+
+Aufräumen auf der Uhr (endgültig, vorher prüfen, dass die Nacht lokal in `sessions\` liegt):
+```
+adb -s <IP:Port> shell run-as de.alex.sleeplogger rm -r files/sessions/20261030_224900   # eine Nacht
+adb -s <IP:Port> shell run-as de.alex.sleeplogger rm -r files/sessions                   # alle (nicht während einer Aufnahme)
+```
+Der Ordner `sessions` wird beim nächsten Start automatisch neu angelegt.
+
 Pro Nacht entsteht `sessions/<Startzeit>/` mit:
 - `accel.csv` – `epoch_ms,x,y,z` (m/s², inkl. Schwerkraft)
 - `gyro.csv` – `epoch_ms,x,y,z` (rad/s)
