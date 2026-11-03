@@ -17,6 +17,7 @@ Die Aufzeichnung auf der Uhr läuft unabhängig davon weiter.
 import argparse
 import json
 import os
+import signal as _signal
 import math
 import socket
 import socketserver
@@ -394,6 +395,8 @@ def main():
             self.end_headers()
             self.wfile.write(body)
 
+    # Strg+C zuverlässig beenden, auch wenn gerade eine Uhr-Verbindung offen ist
+    _signal.signal(_signal.SIGINT, lambda *_: (print("\nbeendet"), os._exit(0)))
     ThreadingHTTPServer.daemon_threads = True
     srv = ThreadingHTTPServer(("127.0.0.1", args.http), Http)
     url = f"http://localhost:{args.http}"
