@@ -213,6 +213,12 @@ Auf der Uhr **Start + PPG** (ohne PPG fehlt die Pulswelle). Nach spätestens 3 s
 Atembewegung, Bewegung, Puls, RMSSD (60 s), Atemzüge/min. Die Live-Erkennung ist einfacher als
 `ppg.py` und meldet mehr Fehlalarme. Maßgeblich ist die Auswertung hinterher.
 
+Der PPG-Kanal wird automatisch gewählt (der mit der deutlichsten Pulsperiode, `--channel 6` legt ihn fest).
+Unter der Pulswelle steht eine Diagnosezeile: Kanal und Güte je Kanal, Pufferlänge, Verzögerung von
+PPG und Accel gegenüber der Laptop-Uhr, Ausschlag der gefilterten Welle, Fehler und die zuletzt
+empfangene PPG-Zeile. Alles Empfangene schreibt `live.py` nach `sessions/live/live_<Zeit>.txt`.
+Diese Datei hilft bei der Fehlersuche.
+
 Kostet Akku (WLAN bleibt aktiv), also nicht über Nacht. Geht der Uhr-Bildschirm aus, kann das WLAN
 schlafen. Dann bricht die Live-Verbindung ab, die Aufzeichnung läuft aber weiter.
 

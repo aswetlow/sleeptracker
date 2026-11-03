@@ -39,11 +39,17 @@ IBI_KEEP_S = 300
 
 
 class State:
-    def __init__(self, ppg_channel):
+    def __init__(self, ppg_channel, record=None):
         self.lock = threading.Lock()
-        self.ch = ppg_channel
+        self.fixed_ch = ppg_channel             # None = automatisch den Kanal mit dem klarsten Puls nehmen
+        self.ch = ppg_channel if ppg_channel is not None else 6
+        self.ch_quality = {}
+        self.ch_checked = 0.0
         self.ppg_t = deque(maxlen=int(PPG_KEEP_S * PPG_FS))
-        self.ppg_y = deque(maxlen=int(PPG_KEEP_S * PPG_FS))
+        self.ppg_y = deque(maxlen=int(PPG_KEEP_S * PPG_FS))   # alle Kanäle v0…v6 (fehlend = NaN)
+        self.last_p = ""
+        self.error = ""
+        self.rec = record                       # Datei, in die jede empfangene Zeile geschrieben wird
         self.sos_ppg = signal.butter(3, (0.6, 3.5), btype="band", fs=PPG_FS, output="sos")
         self.ppg_f = ([], [])                   # gefilterte Pulswelle für die Anzeige
         self.acc = deque(maxlen=int(IMU_KEEP_S * IMU_FS))
@@ -67,18 +73,24 @@ class State:
             return
         kind = parts[0]
         self.counts[kind] = self.counts.get(kind, 0) + 1
+        if self.rec:
+            try:
+                self.rec.write(line if line.endswith("\n") else line + "\n")
+            except Exception:
+                pass
         try:
             t = float(parts[1])
             with self.lock:
                 self.last_rx = time.time()
                 self.lines += 1
                 if kind == "p":
-                    vals = parts[2].split(" ")
+                    self.last_p = line.strip()[:160]
+                    vals = [float(v) for v in parts[2].split()[:7]]
                     if len(vals) <= self.ch:
                         self.counts["p_zu_kurz"] = self.counts.get("p_zu_kurz", 0) + 1
-                    if len(vals) > self.ch:
-                        self.ppg_t.append(t)
-                        self.ppg_y.append(float(vals[self.ch]))   # roh; gefiltert wird in process()
+                    vals += [math.nan] * (7 - len(vals))
+                    self.ppg_t.append(t)
+                    self.ppg_y.append(vals)         # roh; Kanalwahl und Filter in process()
                 elif kind == "a":
                     self.acc.append((t, float(parts[2]), float(parts[3]), float(parts[4])))
                 elif kind == "g":
@@ -87,21 +99,31 @@ class State:
                     self.hr.append((t, float(parts[2])))
                 elif kind == "e" and parts[2].startswith("felt"):
                     self.felt.append(t)
-        except (ValueError, IndexError):
-            pass
+        except (ValueError, IndexError) as e:
+            self.counts["kaputt"] = self.counts.get("kaputt", 0) + 1
+            self.error = f"Zeile nicht lesbar ({e}): {line.strip()[:80]}"
 
     # ---- Verarbeitung (alle 200 ms) ----
     def process(self):
         with self.lock:
-            pt, py = np.array(self.ppg_t), np.array(self.ppg_y)
+            pt, raw = np.array(self.ppg_t), np.array(self.ppg_y, dtype=float).reshape(-1, 7)
             acc, gyro = np.array(self.acc), np.array(self.gyro)
-        if len(py) > PPG_FS * 3:
-            # Nullphasig filtern (vor/zurück): ein kausaler Filter verschiebt die Peaks je nach
-            # Grundlinienschwankung und macht die Intervalle um ±100 ms zappelig
-            y = signal.sosfiltfilt(self.sos_ppg, py - py.mean())
-            with self.lock:
-                self.ppg_f = (pt.tolist(), y.tolist())
-            self._beats(pt, y)
+        if len(pt) > 1 and np.any(np.diff(pt) < 0):           # Batches können überlappen
+            o = np.argsort(pt, kind="stable")
+            pt, raw = pt[o], raw[o]
+        if len(pt) > PPG_FS * 3:
+            if self.fixed_ch is None and time.time() - self.ch_checked > 5:
+                self._pick_channel(raw)
+            py = raw[:, self.ch]
+            ok = np.isfinite(py)
+            if ok.sum() > PPG_FS * 3:
+                pt, py = pt[ok], py[ok]
+                # Nullphasig filtern (vor/zurück): ein kausaler Filter verschiebt die Peaks je nach
+                # Grundlinienschwankung und macht die Intervalle um ±100 ms zappelig
+                y = signal.sosfiltfilt(self.sos_ppg, py - py.mean())
+                with self.lock:
+                    self.ppg_f = (pt.tolist(), y.tolist())
+                self._beats(pt, y)
         if len(acc) > IMU_FS * 5:
             mag = np.linalg.norm(acc[:, 1:], axis=1)
             w = int(IMU_FS)
@@ -112,6 +134,27 @@ class State:
         src = gyro if len(gyro) > IMU_FS * 30 else acc
         if len(src) > IMU_FS * 30:
             self._breath(src, acc)
+
+    def _pick_channel(self, raw):
+        """Kanal mit der deutlichsten Pulsperiode (Autokorrelation bei 0,33–1,5 s) über die letzten 8 s."""
+        self.ch_checked = time.time()
+        seg = raw[-int(8 * PPG_FS):]
+        q = {}
+        for c in range(7):
+            x = seg[:, c]
+            # Status-/Sentinel-Kanäle (negative Codes, konstant) und Lücken überspringen
+            if not np.all(np.isfinite(x)) or np.any(x < 0) or x.std() < 1e-6:
+                continue
+            f = signal.sosfiltfilt(self.sos_ppg, x - x.mean())
+            z = (f - f.mean()) / (f.std() + 1e-12)
+            ac = np.correlate(z, z, "full")[len(z) - 1:] / len(z)
+            q[c] = round(float(ac[int(0.33 * PPG_FS):int(1.5 * PPG_FS)].max()), 2)
+        with self.lock:
+            self.ch_quality = q
+            if q:
+                best = max(q, key=q.get)
+                if best != self.ch and q[best] > q.get(self.ch, -1) + 0.1:
+                    self.ch = best
 
     def _moving_times(self):
         """Zeitpunkte mit Bewegung (Std von |a| über 1 s > 0,03 m/s²) aus dem Accelerometer-Puffer."""
@@ -216,7 +259,20 @@ class State:
             med = np.median(clean) if clean else None
             d = d[np.abs(d) < 0.2 * med] if med else d
             hr_sensor = self.hr[-1][1] if self.hr else None
+            wall = time.time() * 1000
+            yf = np.array(py) if py else np.array([0.0])
+            diag = {
+                "ch": self.ch, "auto": self.fixed_ch is None, "quality": self.ch_quality,
+                "ppg_n": len(self.ppg_t),
+                "ppg_span_s": round((self.ppg_t[-1] - self.ppg_t[0]) / 1000, 1) if len(self.ppg_t) > 1 else 0,
+                "lag_ppg_s": round((wall - self.ppg_t[-1]) / 1000, 1) if self.ppg_t else None,
+                "lag_acc_s": round((wall - self.acc[-1][0]) / 1000, 1) if self.acc else None,
+                "filt_range": round(float(yf.max() - yf.min()), 1),
+                "last_p": self.last_p,
+                "error": self.error,
+            }
             return {
+                "diag": diag,
                 "now": now,
                 "connected": time.time() - self.last_rx < 3,
                 "lines": self.lines,
@@ -353,14 +409,23 @@ def main():
     ap.add_argument("--serial", help="adb-Gerät, z. B. 192.168.178.35:41773")
     ap.add_argument("--port", type=int, default=9000)
     ap.add_argument("--http", type=int, default=8765)
-    ap.add_argument("--channel", type=int, default=6, help="PPG-Kanal (v6 war im Test am saubersten)")
+    ap.add_argument("--channel", type=int, default=None,
+                    help="PPG-Kanal fest wählen (0–6); ohne Angabe automatisch (im Test war v6 am saubersten)")
     ap.add_argument("--demo", action="store_true", help="ohne Uhr, mit synthetischen Daten")
     ap.add_argument("--replay", help="gespeicherte Session abspielen statt live")
     ap.add_argument("--speed", type=float, default=1.0, help="Abspielgeschwindigkeit für --replay")
     ap.add_argument("--no-browser", action="store_true")
     args = ap.parse_args()
 
-    state = State(args.channel)
+    rec = None
+    if not args.demo and not args.replay:
+        from pathlib import Path
+        d = Path(__file__).resolve().parent.parent / "sessions" / "live"
+        d.mkdir(parents=True, exist_ok=True)
+        rec_path = d / time.strftime("live_%Y%m%d_%H%M%S.txt")
+        rec = open(rec_path, "w", buffering=1, encoding="utf-8")
+        print(f"Empfangene Daten werden mitgeschrieben: {rec_path}")
+    state = State(args.channel, rec)
     if args.demo:
         threading.Thread(target=demo_feeder, args=(state,), daemon=True).start()
     elif args.replay:
@@ -374,7 +439,12 @@ def main():
             try:
                 state.process()
             except Exception as e:      # Live-Ansicht soll nie wegen eines Rechenfehlers stehen bleiben
-                print("Verarbeitung:", e)
+                import traceback
+                msg = f"Verarbeitung: {type(e).__name__}: {e}"
+                if msg != state.error:
+                    print(msg)
+                    traceback.print_exc()
+                state.error = msg
             time.sleep(0.2)
     threading.Thread(target=worker, daemon=True).start()
 
@@ -426,7 +496,7 @@ header{display:flex;align-items:center;gap:12px;padding:12px 16px}h1{font-size:1
 .tile{background:var(--panel);border-radius:10px;padding:10px 12px}.tile .v{font-size:26px;font-weight:600;font-variant-numeric:tabular-nums}
 .tile .l{color:var(--muted);font-size:12px}
 .panel{background:var(--panel);border-radius:10px;margin:0 16px 10px;padding:8px 10px}
-.panel .l{color:var(--muted);font-size:12px;margin-bottom:4px}canvas{width:100%;display:block}
+.panel .l{color:var(--muted);font-size:12px;margin-bottom:4px}.diag{color:var(--muted);font:11px/1.4 ui-monospace,monospace;margin-top:4px;word-break:break-all}canvas{width:100%;display:block}
 </style></head><body>
 <header><div id="dot" class="dot"></div><h1>SleepLogger live</h1><span id="status">warte auf Uhr …</span></header>
 <div class="tiles">
@@ -436,7 +506,7 @@ header{display:flex;align-items:center;gap:12px;padding:12px 16px}h1{font-size:1
  <div class="tile"><div class="v" id="breath">–</div><div class="l">Atemzüge/min (Qualität)</div></div>
  <div class="tile"><div class="v" id="cand">–</div><div class="l">Kandidaten / Gespürt (5 min)</div></div>
 </div>
-<div class="panel"><div class="l">Pulswelle, letzte 10 s · Punkte = erkannte Schläge</div><canvas id="c_ppg" height="160"></canvas></div>
+<div class="panel"><div class="l">Pulswelle, letzte 10 s · Punkte = erkannte Schläge</div><canvas id="c_ppg" height="160"></canvas><div class="diag" id="diag"></div></div>
 <div class="panel"><div class="l">Schlagintervalle, letzte 5 min (ms) · rot = auffällig · grau = Bewegung · grün = Gespürt · lila = Pulssensor</div><canvas id="c_ibi" height="160"></canvas></div>
 <div class="panel"><div class="l">Atembewegung, letzte 60 s</div><canvas id="c_breath" height="110"></canvas></div>
 <div class="panel"><div class="l">Bewegung, letzte 60 s</div><canvas id="c_act" height="70"></canvas></div>
@@ -462,7 +532,8 @@ async function tick(){try{const d=await (await fetch('/data')).json();
  document.getElementById('status').textContent=d.connected?`verbunden · Pulswelle ${d.counts.p||0} · Accel ${d.counts.a||0} · Gyro ${d.counts.g||0} · Puls ${d.counts.h||0}`+(d.counts.p?'':' · keine Pulswelle: auf der Uhr mit „Start + PPG“ starten')+(d.counts.p_zu_kurz?` · ${d.counts.p_zu_kurz} PPG-Zeilen zu kurz (anderer Kanal nötig)`:''):'warte auf Uhr …';
  const n=d.numbers;hr_ppg.textContent=fmt(n.hr_ppg);hr_sensor.textContent=fmt(n.hr_sensor);rmssd.textContent=fmt(n.rmssd);
  breath.textContent=n.breath?`${fmt(n.breath,1)} (${fmt(n.breath_q,2)})`:'–';cand.textContent=`${n.candidates_5min} / ${n.felt_5min}`;
- const now=d.now;
+ const now=d.now;const g_=d.diag;
+ document.getElementById('diag').textContent=`Kanal v${g_.ch}${g_.auto?' (auto)':''} · Güte ${Object.entries(g_.quality).map(([c,q])=>'v'+c+'='+q).join(' ')||'–'} · Puffer ${g_.ppg_n} Werte / ${g_.ppg_span_s} s · Verzögerung PPG ${g_.lag_ppg_s??'–'} s, Accel ${g_.lag_acc_s??'–'} s · Ausschlag ${g_.filt_range}${d.counts.kaputt?' · '+d.counts.kaputt+' Zeilen unlesbar':''}${g_.error?' · '+g_.error:''} · letzte Zeile: ${g_.last_p}`;
  const g=plot('c_ppg',d.ppg.t,d.ppg.y,now-10000,now);
  if(g){const bt=d.beats.filter(b=>b>=now-10000);g.x.fillStyle=css('--beat');
   for(const b of bt){let i=d.ppg.t.findIndex(t=>t>=b);if(i<0)continue;g.x.beginPath();g.x.arc(g.X(b),g.Y(d.ppg.y[i]),3.5,0,7);g.x.fill()}}
