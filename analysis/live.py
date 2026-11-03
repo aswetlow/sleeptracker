@@ -16,6 +16,7 @@ Die Aufzeichnung auf der Uhr läuft unabhängig davon weiter.
 """
 import argparse
 import json
+import os
 import math
 import socket
 import socketserver
@@ -72,6 +73,8 @@ class State:
                 self.lines += 1
                 if kind == "p":
                     vals = parts[2].split(" ")
+                    if len(vals) <= self.ch:
+                        self.counts["p_zu_kurz"] = self.counts.get("p_zu_kurz", 0) + 1
                     if len(vals) > self.ch:
                         self.ppg_t.append(t)
                         self.ppg_y.append(float(vals[self.ch]))   # roh; gefiltert wird in process()
@@ -245,6 +248,7 @@ def tcp_server(state, port):
             print("Uhr getrennt")
 
     socketserver.ThreadingTCPServer.allow_reuse_address = True
+    socketserver.ThreadingTCPServer.daemon_threads = True      # sonst hängt Strg+C an der offenen Uhr-Verbindung
     srv = socketserver.ThreadingTCPServer(("127.0.0.1", port), Handler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
 
@@ -390,15 +394,19 @@ def main():
             self.end_headers()
             self.wfile.write(body)
 
+    ThreadingHTTPServer.daemon_threads = True
     srv = ThreadingHTTPServer(("127.0.0.1", args.http), Http)
     url = f"http://localhost:{args.http}"
     print(f"Dashboard: {url}  (Strg+C beendet)")
     if not args.no_browser:
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()
     try:
-        srv.serve_forever()
+        srv.serve_forever(poll_interval=0.2)
     except KeyboardInterrupt:
-        pass
+        print("beendet")
+    finally:
+        srv.server_close()
+        os._exit(0)      # offene Sockets/Threads nicht auf Windows hängen lassen
 
 
 PAGE = r"""<!doctype html>
@@ -448,7 +456,7 @@ function vlines(g,ts,color,t0){if(!g)return;g.x.strokeStyle=color;g.x.lineWidth=
 const fmt=(v,d=0)=>v==null?'–':Number(v).toFixed(d);
 async function tick(){try{const d=await (await fetch('/data')).json();
  document.getElementById('dot').classList.toggle('on',d.connected);
- document.getElementById('status').textContent=d.connected?`verbunden · Pulswelle ${d.counts.p||0} · Accel ${d.counts.a||0} · Gyro ${d.counts.g||0} · Puls ${d.counts.h||0}`+(d.counts.p?'':' · keine Pulswelle: auf der Uhr mit „Start + PPG“ starten'):'warte auf Uhr …';
+ document.getElementById('status').textContent=d.connected?`verbunden · Pulswelle ${d.counts.p||0} · Accel ${d.counts.a||0} · Gyro ${d.counts.g||0} · Puls ${d.counts.h||0}`+(d.counts.p?'':' · keine Pulswelle: auf der Uhr mit „Start + PPG“ starten')+(d.counts.p_zu_kurz?` · ${d.counts.p_zu_kurz} PPG-Zeilen zu kurz (anderer Kanal nötig)`:''):'warte auf Uhr …';
  const n=d.numbers;hr_ppg.textContent=fmt(n.hr_ppg);hr_sensor.textContent=fmt(n.hr_sensor);rmssd.textContent=fmt(n.rmssd);
  breath.textContent=n.breath?`${fmt(n.breath,1)} (${fmt(n.breath_q,2)})`:'–';cand.textContent=`${n.candidates_5min} / ${n.felt_5min}`;
  const now=d.now;
