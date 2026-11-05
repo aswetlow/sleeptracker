@@ -4,17 +4,41 @@
   "private": true,
   "description": "TypeScript-Variante der SleepLogger-Auswertung (gleiche Ausgaben wie analysis/*.py)",
   "type": "module",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "analyze": "tsx src/analyze.ts",
     "ppg": "tsx src/ppg.ts",
     "live": "tsx src/live.ts",
     "test": "tsx --test test/*.test.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit && tsc --noEmit -p web",
+    "ui": "vite build --config web/vite.config.ts --logLevel warn && tsx server/live_server.ts",
+    "ui:dev": "tsx server/live_server.ts --dev",
+    "ui:build": "vite build --config web/vite.config.ts"
   },
   "devDependencies": {
+    "@tailwindcss/vite": "^4.3.4",
+    "@types/express": "^5.0.6",
     "@types/node": "^22.10.0",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^5.2.0",
+    "tailwindcss": "^4.3.4",
     "tsx": "^4.19.0",
-    "typescript": "~5.9.3"
+    "typescript": "~5.9.3",
+    "vite": "^7.3.7"
+  },
+  "dependencies": {
+    "@radix-ui/react-tabs": "^1.2.1",
+    "@radix-ui/react-tooltip": "^1.4.1",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "express": "^5.3.0",
+    "lucide-react": "^1.69.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "recharts": "^3.10.1",
+    "tailwind-merge": "^3.7.0"
   }
 }
