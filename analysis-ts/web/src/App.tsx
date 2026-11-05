@@ -2,6 +2,7 @@ import { Activity, AlertTriangle, Cpu, HeartPulse, Moon, Pause, Play, Radio, Sun
 import { useEffect, useState, type ReactNode } from "react";
 import { Legend, Sparkline } from "@/components/chart";
 import { ActivityChart, BreathChart, IbiChart, PpgChart } from "@/components/charts";
+import { EcgTestView, LiveEcgCard } from "@/components/ecg";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -17,6 +18,8 @@ export function App() {
   const [paused, setPaused] = useState(false);
   const [dark, setDark] = useState(() => document.documentElement.classList.contains("dark"));
   const [span, setSpan] = useState("300000");
+  const [view, setView] = useState(() => (location.hash === "#ecg" ? "ecg" : "live"));
+  useEffect(() => { window.history.replaceState(null, "", view === "ecg" ? "#ecg" : "#"); }, [view]);
   const { data, online, history } = useLiveData(paused);
 
   useEffect(() => {
@@ -59,6 +62,12 @@ export function App() {
         </header>
 
         <main className="mx-auto grid max-w-7xl gap-4 p-4">
+          <Tabs value={view} onValueChange={setView}>
+            <TabsList>
+              <TabsTrigger value="live">Live</TabsTrigger>
+              <TabsTrigger value="ecg">ECG test</TabsTrigger>
+            </TabsList>
+          </Tabs>
           {!online && (
             <Alert variant="destructive">
               <AlertTriangle />
@@ -66,7 +75,8 @@ export function App() {
               <AlertDescription>Is <code className="font-mono">npm run ui</code> still running? The page reconnects automatically.</AlertDescription>
             </Alert>
           )}
-          {data ? <Dashboard d={data} history={history} span={span} setSpan={setSpan} paused={paused} /> : <Skeleton />}
+          {view === "ecg" ? <EcgTestView />
+            : data ? <Dashboard d={data} history={history} span={span} setSpan={setSpan} paused={paused} /> : <Skeleton />}
         </main>
       </div>
     </TooltipProvider>
@@ -140,6 +150,8 @@ function Dashboard({ d, history, span, setSpan, paused }: { d: LiveData; history
         </Card>
         <Diagnostics d={d} />
       </div>
+
+      {d.ecg && <LiveEcgCard e={d.ecg} now={d.now} />}
 
       <div className="grid gap-4 lg:grid-cols-3">
         <Card className="lg:col-span-2">

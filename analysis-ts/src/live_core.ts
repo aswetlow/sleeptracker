@@ -8,10 +8,18 @@ import { createServer as createTcp } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { autocorr, butterBandpass, findPeaks, peakProminences, principalComponent, sosfiltfilt } from "./lib/dsp.ts";
+import { detectR } from "./ecg_probe.ts";
 import { readEvents, readNumericCsv } from "./lib/io.ts";
 import { mean, median, std } from "./lib/stats.ts";
 
 export const PPG_FS = 100, IMU_FS = 25, PPG_KEEP_S = 12, IMU_KEEP_S = 70, IBI_KEEP_S = 300;
+/** ECG test: keep 12 s at up to 1 kHz; detection runs on the last 10 s. */
+const ECG_KEEP = 12_000, ECG_WIN_MS = 10_000;
+
+export interface LiveEcg {
+  t: number[]; y: number[]; peaks: number[]; hr: number | null; ch: number; fs: number;
+  looksEcg: boolean; why: string; events: number; lead: { t: number; value: string } | null;
+}
 
 /** Fixed-length ring buffer (like deque(maxlen)). */
 class Ring<T> {
@@ -49,6 +57,10 @@ export class State {
   activity: { t: number[]; y: number[] } = { t: [], y: [] };
   lastP = "";
   error = "";
+  ecgT = new Ring<number>(ECG_KEEP);
+  ecgY = new Ring<number[]>(ECG_KEEP);
+  lead: { t: number; value: string } | null = null;
+  ecgF: Omit<LiveEcg, "events" | "lead"> | null = null;
 
   constructor(public fixedCh: number | null, private rec: WriteStream | null) {
     this.ch = fixedCh ?? 6;
@@ -84,10 +96,48 @@ export class State {
       const v = Number(parts[2]);
       if (Number.isNaN(v)) return bad("number");
       this.hr.push([t, v]);
+    } else if (kind === "c") {           // raw ECG (ECG test on the watch)
+      const vals = parts[2].trim().split(/\s+/).map(Number);
+      if (vals.some(Number.isNaN)) return bad("number");
+      this.ecgT.push(t); this.ecgY.push(vals);
+    } else if (kind === "l") {           // ECG lead detector
+      this.lead = { t, value: parts[2].trim() };
     } else if (kind === "e" && parts[2].startsWith("felt")) this.felt.push(t);
   }
 
+  /** Last 10 s of ECG: per channel band-pass + R peaks (ecg_probe.detectR), keep the channel that looks most like an ECG. */
+  private processEcg() {
+    const tAll = this.ecgT.items, yAll = this.ecgY.items;
+    const n = Math.min(tAll.length, yAll.length);
+    if (n < 50) return;
+    const tEnd = tAll[n - 1];
+    let i0 = n - 1;
+    while (i0 > 0 && tAll[i0 - 1] > tEnd - ECG_WIN_MS) i0--;
+    const t = tAll.slice(i0, n), rows = yAll.slice(i0, n);
+    const span = t[t.length - 1] - t[0];
+    if (t.length < 50 || span <= 0) return;
+    const fs = ((t.length - 1) * 1000) / span;
+    const width = Math.min(8, Math.max(...rows.map((r) => r.length)));
+    let best: { c: number; d: ReturnType<typeof detectR> } | null = null;
+    for (let c = 0; c < width; c++) {
+      const d = detectR(rows.map((r) => (c < r.length ? r[c] : 0)), fs);
+      if (!best || d.score > best.d.score) best = { c, d };
+    }
+    if (!best) return;
+    // timestamps may come in blocks; spread samples evenly over the window
+    const tu = (i: number) => t[0] + (i * span) / (t.length - 1);
+    const k = Math.max(1, Math.floor(t.length / 1500));
+    const tt: number[] = [], yy: number[] = [];
+    const src = best.d.filt.length ? best.d.filt : rows.map((r) => r[best!.c] ?? 0);
+    for (let i = 0; i < t.length; i += k) { tt.push(tu(i)); yy.push(Math.round(src[i] * 10) / 10); }
+    this.ecgF = {
+      t: tt, y: yy, peaks: best.d.peaks.map(tu), hr: best.d.hr === null ? null : Math.round(best.d.hr * 10) / 10,
+      ch: best.c, fs: Math.round(fs * 10) / 10, looksEcg: best.d.looksEcg, why: best.d.why,
+    };
+  }
+
   process() {
+    if (this.ecgT.length) this.processEcg();
     let pt = this.ppgT.items.slice(), raw = this.ppgY.items.slice();
     if (pt.length !== raw.length) { const n = Math.min(pt.length, raw.length); pt = pt.slice(-n); raw = raw.slice(-n); }
     let sorted = true;
@@ -266,6 +316,10 @@ export class State {
       hr: this.hr.items.filter((x) => x[0] > now - IBI_KEEP_S * 1000),
       breath: this.breath,
       activity: this.activity,
+      ecg: this.counts.c || this.lead
+        ? ({ ...(this.ecgF ?? { t: [], y: [], peaks: [], hr: null, ch: 0, fs: 0, looksEcg: false, why: "waiting for data" }),
+          events: this.counts.c ?? 0, lead: this.lead } satisfies LiveEcg)
+        : null,
       numbers: {
         hr_ppg: clean.length >= 3 ? round1(60000 / median(clean.slice(-10))) : null,
         hr_sensor: hrLast ? hrLast[1] : null,
@@ -302,7 +356,9 @@ export function demoFeeder(state: State) {
   const rnd = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
   const normal = (s: number) => s * Math.sqrt(-2 * Math.log(rnd() + 1e-12)) * Math.cos(2 * Math.PI * rnd());
   const t0 = Date.now();
-  let nextBeat = 0, beatN = 0, lastImu = 0, lastPpg = 0;
+  let nextBeat = 0, beatN = 0, lastImu = 0, lastPpg = 0, lastEcg = 0;
+  // ECG beat shape relative to the R peak: P, Q, R, S, T as (offset ms, amplitude, width ms)
+  const PQRST: [number, number, number][] = [[-200, 0.12, 25], [-30, -0.12, 8], [0, 1, 10], [30, -0.3, 10], [250, 0.3, 45]];
   const beats: number[] = [];
   setInterval(() => {
     const now = Date.now() - t0;
@@ -333,7 +389,17 @@ export function demoFeeder(state: State) {
         state.feed(`g,${Math.round(t0 + lastImu)},${0.003 * resp + normal(n / 2)},${0.0015 * resp + normal(n / 2)},${normal(n / 2)}`);
       }
     }
-    if (Math.trunc(now) % 1000 < 100) state.feed(`h,${Math.round(t0 + now)},62`);
+    // synthetic ECG at 250 Hz; the R peak comes ~200 ms before the pulse wave peak
+    while (lastEcg + 4 <= now) {
+      lastEcg += 4;
+      let x = 0;
+      for (const b of beats.slice(-6)) for (const [dt, a, w] of PQRST) x += a * Math.exp(-(((lastEcg - (b - 200) - dt) / w) ** 2));
+      state.feed(`c,${Math.round(t0 + lastEcg)},${(800 * x + 120 * Math.sin((2 * Math.PI * lastEcg) / 4000) + normal(12)).toFixed(1)}`);
+    }
+    if (Math.trunc(now) % 1000 < 100) {
+      state.feed(`h,${Math.round(t0 + now)},62`);
+      state.feed(`l,${Math.round(t0 + now)},1`);
+    }
   }, 100);
 }
 
