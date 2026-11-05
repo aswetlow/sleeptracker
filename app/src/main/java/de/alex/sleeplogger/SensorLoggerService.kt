@@ -55,6 +55,8 @@ class SensorLoggerService : Service(), SensorEventListener {
         )
         // ECG test (experimental): undocumented ECG sensors of the Pixel Watch, 60 s, finger on the crown
         const val EXTRA_ECG_TEST = "ecg_test"
+        // SpO2 calibration test: PPG recording with a large clock on the screen (film it next to an oximeter)
+        const val EXTRA_SPO2_TEST = "spo2_test"
         const val ECG_TEST_MS = 60_000L
         const val ECG_TYPE = "com.google.sensor.ecg"
         const val ECG_LEAD_TYPE = "com.google.sensor.ecg_lead_detector"
@@ -93,6 +95,7 @@ class SensorLoggerService : Service(), SensorEventListener {
             private set
         @Volatile var poseHoldLabel = ""
             private set
+        @Volatile var spo2Mode = false
         @Volatile var ecgMode = false
             private set
         @Volatile var ecgCount = 0L
@@ -221,7 +224,10 @@ class SensorLoggerService : Service(), SensorEventListener {
         } else {
             startForeground(NOTIFICATION_ID, buildNotification(ecg))
         }
-        startLogging(intent?.getBooleanExtra(EXTRA_RAW, false) ?: false, ecg)
+        val spo2 = !ecg && (intent?.getBooleanExtra(EXTRA_SPO2_TEST, false) ?: false)
+        spo2Mode = spo2
+        startLogging((intent?.getBooleanExtra(EXTRA_RAW, false) ?: false) || spo2, ecg)
+        if (spo2) handler.post { logEvent("spo2_test start (clock on screen, film it next to the oximeter)") }
         return START_STICKY
     }
 
@@ -441,6 +447,7 @@ class SensorLoggerService : Service(), SensorEventListener {
             }
             wakeLock?.takeIf { it.isHeld }?.release()
             isRunning = false
+            spo2Mode = false
         }
         super.onDestroy()
     }

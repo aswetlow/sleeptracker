@@ -27,10 +27,12 @@ class MainActivity : ComponentActivity() {
     private lateinit var poseHeader: TextView
     private val poseButtons = LinkedHashMap<String, Button>()
     private lateinit var ecgButton: Button
+    private lateinit var spo2Button: Button
+    private val clockFmt = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US)
     private var pendingMode = Mode.NORMAL
     private var shownEcgResult: String? = null
 
-    private enum class Mode { NORMAL, RAW, ECG }
+    private enum class Mode { NORMAL, RAW, ECG, SPO2 }
     private val ui = Handler(Looper.getMainLooper())
 
     private val requiredPermissions: Array<String>
@@ -50,7 +52,12 @@ class MainActivity : ComponentActivity() {
         override fun run() {
             render()
             // faster during the ECG test so the event counter and countdown move smoothly
-            ui.postDelayed(this, if (SensorLoggerService.isRunning && SensorLoggerService.ecgMode) 250 else 1000)
+            // SpO2 test: 10 Hz so the clock's tenths are readable in a video
+            ui.postDelayed(this, when {
+                SensorLoggerService.isRunning && SensorLoggerService.spo2Mode -> 100
+                SensorLoggerService.isRunning && SensorLoggerService.ecgMode -> 250
+                else -> 1000
+            })
         }
     }
 
@@ -63,6 +70,8 @@ class MainActivity : ComponentActivity() {
         rawButton = Button(this).apply { text = "Start + PPG"; setOnClickListener { onToggle(Mode.RAW) } }
         // experimental: 60 s with the undocumented ECG sensors, finger of the other hand on the crown
         ecgButton = Button(this).apply { text = "ECG test"; setOnClickListener { onToggle(Mode.ECG) } }
+        // SpO2 calibration: PPG recording, large clock, screen stays on (film watch + oximeter together)
+        spo2Button = Button(this).apply { text = "SpO2 test"; setOnClickListener { onToggle(Mode.SPO2) } }
         // ectopic beat felt -> time marker in events.csv ("felt"), as a reference for ppg.py
         markButton = Button(this).apply {
             text = "Felt"
@@ -108,6 +117,8 @@ class MainActivity : ComponentActivity() {
                 LinearLayout.LayoutParams.WRAP_CONTENT))
             addView(ecgButton, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT))
+            addView(spo2Button, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT))
             addView(poseHeader)
             poseButtons.values.forEach {
                 addView(it, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
@@ -142,11 +153,27 @@ class MainActivity : ComponentActivity() {
     private fun startLogger(mode: Mode) {
         startForegroundService(Intent(this, SensorLoggerService::class.java)
             .putExtra(SensorLoggerService.EXTRA_RAW, mode == Mode.RAW)
-            .putExtra(SensorLoggerService.EXTRA_ECG_TEST, mode == Mode.ECG))
+            .putExtra(SensorLoggerService.EXTRA_ECG_TEST, mode == Mode.ECG)
+            .putExtra(SensorLoggerService.EXTRA_SPO2_TEST, mode == Mode.SPO2))
     }
 
     private fun render() {
-        if (SensorLoggerService.isRunning && SensorLoggerService.ecgMode) {
+        status.textSize = 12f
+        if (SensorLoggerService.isRunning && SensorLoggerService.spo2Mode) {
+            val now = System.currentTimeMillis()
+            status.textSize = 30f
+            status.text = clockFmt.format(java.util.Date(now)) + "." + (now % 1000) / 100
+            toggle.text = "Stop"
+            markButton.visibility = View.GONE
+            poseHeader.text = "SpO2 test · PPG ${SensorLoggerService.rawCount / 1000}k" +
+                (if (SensorLoggerService.liveConnected) " · Live ✓" else "")
+            poseHeader.visibility = View.VISIBLE
+            poseButtons.values.forEach { it.visibility = View.GONE }
+            rawButton.visibility = View.GONE
+            ecgButton.visibility = View.GONE
+            spo2Button.visibility = View.GONE
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else if (SensorLoggerService.isRunning && SensorLoggerService.ecgMode) {
             val left = ((SensorLoggerService.ecgEndsAtMs - System.currentTimeMillis()) / 1000).coerceAtLeast(0)
             status.text = "Finger on the crown\n$left s · ECG ${SensorLoggerService.ecgCount}\n" +
                 "lead ${SensorLoggerService.ecgLeadLast}" +
@@ -155,6 +182,7 @@ class MainActivity : ComponentActivity() {
             shownEcgResult = null   // so the result of this test is shown/toasted
             rawButton.visibility = View.GONE
             ecgButton.visibility = View.GONE
+            spo2Button.visibility = View.GONE
             markButton.visibility = View.GONE
             poseHeader.visibility = View.GONE
             poseButtons.values.forEach { it.visibility = View.GONE }
@@ -167,6 +195,7 @@ class MainActivity : ComponentActivity() {
             toggle.text = "Stop"
             rawButton.visibility = View.GONE
             ecgButton.visibility = View.GONE
+            spo2Button.visibility = View.GONE
             markButton.visibility = View.VISIBLE
             val now = System.currentTimeMillis()
             val holdLeft = (SensorLoggerService.poseHoldUntilMs - now) / 1000
@@ -196,6 +225,7 @@ class MainActivity : ComponentActivity() {
             toggle.text = "Start"
             rawButton.visibility = View.VISIBLE
             ecgButton.visibility = View.VISIBLE
+            spo2Button.visibility = View.VISIBLE
             markButton.visibility = View.GONE
             poseHeader.visibility = View.GONE
             poseButtons.values.forEach { it.visibility = View.GONE }
