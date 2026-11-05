@@ -19,6 +19,8 @@ const ECG_KEEP = 12_000, ECG_WIN_MS = 10_000;
 export interface LiveEcg {
   t: number[]; y: number[]; peaks: number[]; hr: number | null; ch: number; fs: number;
   looksEcg: boolean; why: string; events: number; lead: { t: number; value: string } | null;
+  /** R-R intervals of the whole test so far (time of the second beat, ms). */
+  rr: { t: number[]; rr: number[] };
 }
 
 /** Fixed-length ring buffer (like deque(maxlen)). */
@@ -60,7 +62,8 @@ export class State {
   ecgT = new Ring<number>(ECG_KEEP);
   ecgY = new Ring<number[]>(ECG_KEEP);
   lead: { t: number; value: string } | null = null;
-  ecgF: Omit<LiveEcg, "events" | "lead"> | null = null;
+  ecgF: Omit<LiveEcg, "events" | "lead" | "rr"> | null = null;
+  ecgPeaks = new Ring<number>(600);
 
   constructor(public fixedCh: number | null, private rec: WriteStream | null) {
     this.ch = fixedCh ?? 6;
@@ -130,10 +133,25 @@ export class State {
     const tt: number[] = [], yy: number[] = [];
     const src = best.d.filt.length ? best.d.filt : rows.map((r) => r[best!.c] ?? 0);
     for (let i = 0; i < t.length; i += k) { tt.push(tu(i)); yy.push(Math.round(src[i] * 10) / 10); }
+    // collect R peaks across windows for the RR history (each window overlaps the previous one)
+    if (best.d.looksEcg) {
+      const last = this.ecgPeaks.last() ?? -Infinity;
+      // peaks right at the window edge are unreliable (filter edge); the next window picks them up
+      for (const p of best.d.peaks.map(tu)) if (p > last + 250 && p < tEnd - 300) this.ecgPeaks.push(p);
+    }
     this.ecgF = {
-      t: tt, y: yy, peaks: best.d.peaks.map(tu), hr: best.d.hr === null ? null : Math.round(best.d.hr * 10) / 10,
+      t: tt, y: yy, peaks: best.d.peaks.map(tu), hr: best.d.hr === null || !best.d.looksEcg ? null : Math.round(best.d.hr * 10) / 10,
       ch: best.c, fs: Math.round(fs * 10) / 10, looksEcg: best.d.looksEcg, why: best.d.why,
     };
+  }
+
+  private ecgRr() {
+    const p = this.ecgPeaks.items, t: number[] = [], rr: number[] = [];
+    for (let i = 1; i < p.length; i++) {
+      const d = p[i] - p[i - 1];
+      if (d >= 300 && d <= 2000) { t.push(p[i]); rr.push(Math.round(d)); }
+    }
+    return { t, rr };
   }
 
   process() {
@@ -318,7 +336,7 @@ export class State {
       activity: this.activity,
       ecg: this.counts.c || this.lead
         ? ({ ...(this.ecgF ?? { t: [], y: [], peaks: [], hr: null, ch: 0, fs: 0, looksEcg: false, why: "waiting for data" }),
-          events: this.counts.c ?? 0, lead: this.lead } satisfies LiveEcg)
+          events: this.counts.c ?? 0, lead: this.lead, rr: this.ecgRr() } satisfies LiveEcg)
         : null,
       numbers: {
         hr_ppg: clean.length >= 3 ? round1(60000 / median(clean.slice(-10))) : null,
@@ -416,12 +434,14 @@ export function replayFeeder(state: State, session: string, speed: number) {
     const d = readNumericCsv(join(session, "hr.csv"), ["epoch_ms", "bpm"]);
     for (let i = 0; i < d.epoch_ms.length; i++) rows.push([d.epoch_ms[i], `h,${d.epoch_ms[i]},${d.bpm[i]}`]);
   }
-  const pp = join(session, "raw_ppg.csv");
-  if (existsSync(pp)) {
+  // raw files: epoch_ms,accuracy,n,"v0 v1 …" -> p (PPG), c (ECG test), l (ECG lead detector)
+  for (const [name, kind] of [["raw_ppg.csv", "p"], ["raw_ecg.csv", "c"], ["raw_ecg_lead.csv", "l"]] as const) {
+    const pp = join(session, name);
+    if (!existsSync(pp)) continue;
     for (const line of readFileSync(pp, "latin1").split("\n").slice(1)) {
-      if (!line) continue;
+      if (!line.trim()) continue;
       const c1 = line.indexOf(","), c3 = line.indexOf(",", line.indexOf(",", c1 + 1) + 1);
-      rows.push([Number(line.slice(0, c1)), `p,${line.slice(0, c1)},${line.slice(c3 + 1).trim()}`]);
+      rows.push([Number(line.slice(0, c1)), `${kind},${line.slice(0, c1)},${line.slice(c3 + 1).trim()}`]);
     }
   }
   for (const e of readEvents(session)) if (e.event === "felt") rows.push([e.t, `e,${e.t},felt`]);

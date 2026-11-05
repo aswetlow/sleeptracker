@@ -123,6 +123,9 @@ function Dashboard({ d, history, span, setSpan, paused }: { d: LiveData; history
         </Alert>
       )}
 
+      {/* during the ECG test the ECG is what matters: show it first */}
+      {d.ecg && <LiveEcgCard e={d.ecg} now={d.now} />}
+
       <div className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-5">
         <Kpi icon={<HeartPulse />} label="HR from pulse wave" unit="bpm" value={fmt(n.hr_ppg)} spark={history.map((h) => h.hr_ppg)} color="var(--chart-1)"
           hint={n.hr_ppg != null && n.hr_sensor != null ? `${n.hr_ppg - n.hr_sensor >= 0 ? "+" : ""}${fmt(n.hr_ppg - n.hr_sensor, 1)} vs. sensor` : "median of the last 10 clean beats"} />
@@ -150,8 +153,6 @@ function Dashboard({ d, history, span, setSpan, paused }: { d: LiveData; history
         </Card>
         <Diagnostics d={d} />
       </div>
-
-      {d.ecg && <LiveEcgCard e={d.ecg} now={d.now} />}
 
       <div className="grid gap-4 lg:grid-cols-3">
         <Card className="lg:col-span-2">

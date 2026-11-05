@@ -22,6 +22,7 @@ import { analyse as analysePpg, bandpass as ppgBandpass, loadPpg, pickChannel } 
 
 const ECG_BAND: [number, number] = [0.5, 40];
 const RR_MIN = 300, RR_MAX = 2000;
+const SHAPE_MIN = 0.7;   // real beats: ~0.9; peaks picked from noise: < 0.55
 
 // ---------- reading ----------
 
@@ -93,37 +94,103 @@ const pct = (x: ArrayLike<number>, q: number) => {
 };
 
 /**
- * Band-pass 0.5–40 Hz (upper edge limited to 0.45·fs), polarity so that R points up,
- * peaks at least 0.3 s apart with a prominence of ≥ 40 % of the robust amplitude.
- * "Looks like ECG": ≥ 8 beats, ≥ 80 % of RR intervals in 300–2000 ms, successive RR changes < 20 % (median).
+ * Beat-shape consistency: median correlation of each beat (−150…+350 ms around the R peak, i.e. QRS + T)
+ * with the average beat. Real heartbeats repeat their shape (> 0.5); peaks picked from noise do not.
+ */
+export function templateCorr(y: ArrayLike<number>, peaks: number[], fs: number): number {
+  const a = Math.round(0.15 * fs), b = Math.round(0.35 * fs);
+  const segs = peaks.filter((p) => p - a >= 0 && p + b < y.length && Number.isFinite(y[p - a]) && Number.isFinite(y[p + b]))
+    .map((p) => Array.from({ length: a + b }, (_, i) => y[p - a + i]));
+  if (segs.length < 4) return 0;
+  const tpl = segs[0].map((_, i) => mean(segs.map((s) => s[i])));
+  const corr = (u: number[], v: number[]) => {
+    const mu = mean(u), mv = mean(v);
+    let n = 0, du = 0, dv = 0;
+    for (let i = 0; i < u.length; i++) { n += (u[i] - mu) * (v[i] - mv); du += (u[i] - mu) ** 2; dv += (v[i] - mv) ** 2; }
+    return du && dv ? n / Math.sqrt(du * dv) : 0;
+  };
+  return median(segs.map((s) => corr(s, tpl)));
+}
+
+/**
+ * Longest stretch without lead-off artefacts: 1-s windows whose spread (p95−p5) is at most 5× the median
+ * window spread and that do not touch the ADC rail. At the start of the test the ECG sits at the rail
+ * (±2^21) and needs a few seconds to settle; those seconds would otherwise dominate the filter and the
+ * amplitude estimate. Returns [start, end) sample indices.
+ */
+export function stableRange(x: ArrayLike<number>, fs: number): [number, number] {
+  const w = Math.max(1, Math.round(fs)), nW = Math.floor(x.length / w);
+  if (nW < 3) return [0, x.length];
+  let rail = 0;
+  for (let i = 0; i < x.length; i++) rail = Math.max(rail, Math.abs(x[i]));
+  const spread: number[] = [], railHit: boolean[] = [];
+  for (let k = 0; k < nW; k++) {
+    const seg = Array.from({ length: w }, (_, i) => x[k * w + i]);
+    spread.push(pct(seg, 0.95) - pct(seg, 0.05));
+    railHit.push(seg.filter((v) => Math.abs(v) >= rail).length >= 3);
+  }
+  const lim = 5 * median(spread);
+  let best: [number, number] = [0, 0], start = -1;
+  for (let k = 0; k <= nW; k++) {
+    const ok = k < nW && spread[k] <= lim && !railHit[k];
+    if (ok && start < 0) start = k;
+    if (!ok && start >= 0) { if (k - start > best[1] - best[0]) best = [start, k]; start = -1; }
+  }
+  if (best[1] === best[0]) return [0, x.length];
+  // the last window takes the remainder
+  return [best[0] * w, best[1] === nW ? x.length : best[1] * w];
+}
+
+/**
+ * Band-pass 0.5–40 Hz (upper edge limited to 0.45·fs) on the longest artefact-free stretch, polarity so
+ * that R points up, peaks at least 0.3 s apart with a prominence of ≥ 50 % of the robust amplitude;
+ * a peak within 450 ms after a beat that is less than 60 % of it is dropped (T wave).
+ * "Looks like ECG": beats share their shape (templateCorr ≥ 0.7), ≥ 8 beats, ≥ 80 % of RR intervals in 300–2000 ms,
+ * successive RR changes < 20 % (median). Peak indices refer to the full input.
  */
 export function detectR(x: ArrayLike<number>, fs: number): RDetect {
   const empty = (why: string): RDetect => ({ fs, filt: new Float64Array(0), peaks: [], rr: [], plausible: 0, hr: null, looksEcg: false, score: 0, why });
   if (!(fs >= 50)) return empty(`sample rate ${f(fs, 1)} Hz is too low for an ECG`);
   if (x.length < fs * 4) return empty("less than 4 s of data");
-  const m = mean(x);
   if (std(x, 0) === 0) return empty("constant signal");
-  let y: Float64Array;
+  const [a, b] = stableRange(x, fs);
+  if (b - a < fs * 4) return empty("less than 4 s without lead-off artefacts");
+  const seg = Array.from({ length: b - a }, (_, i) => x[a + i]);
+  const m = mean(seg);
+  let ys: Float64Array;
   try {
-    y = sosfiltfilt(butterBandpass(2, ECG_BAND[0], Math.min(ECG_BAND[1], 0.45 * fs), fs), Array.from(x, (v) => v - m));
+    ys = sosfiltfilt(butterBandpass(2, ECG_BAND[0], Math.min(ECG_BAND[1], 0.45 * fs), fs), seg.map((v) => v - m));
   } catch (e) { return empty((e as Error).message); }
-  if (Math.abs(pct(y, 0.005)) > Math.abs(pct(y, 0.995))) y = y.map((v) => -v);
-  const amp = pct(y, 0.995) - median(y);
+  if (Math.abs(pct(ys, 0.005)) > Math.abs(pct(ys, 0.995))) ys = ys.map((v) => -v);
+  const amp = pct(ys, 0.995) - median(ys);
   if (!(amp > 0)) return empty("no amplitude after filtering");
-  const { peaks } = findPeaks(y, { distance: Math.max(1, Math.trunc(0.3 * fs)), prominence: 0.4 * amp });
+  const raw = findPeaks(ys, { distance: Math.max(1, Math.trunc(0.3 * fs)), prominence: 0.5 * amp }).peaks;
+  const tWin = 0.45 * fs, segPeaks: number[] = [];
+  for (const p of raw) {
+    const prev = segPeaks[segPeaks.length - 1];
+    if (prev !== undefined && p - prev < tWin && ys[p] < 0.6 * ys[prev]) continue;     // T wave after R
+    if (prev !== undefined && p - prev < tWin && ys[prev] < 0.6 * ys[p]) segPeaks.pop(); // previous one was the T wave
+    segPeaks.push(p);
+  }
+  const peaks = segPeaks.map((p) => p + a);
+  const y = new Float64Array(x.length).fill(NaN);
+  y.set(ys, a);
   const rr = peaks.slice(1).map((p, i) => ((p - peaks[i]) * 1000) / fs);
   const ok = rr.filter((v) => v >= RR_MIN && v <= RR_MAX);
   const succ = ok.slice(1).map((v, i) => Math.abs(v - ok[i]) / ok[i]);
   const stable = succ.length ? median(succ) : Infinity;
   const plausibleShare = rr.length ? ok.length / rr.length : 0;
-  const looksEcg = peaks.length >= 8 && plausibleShare >= 0.8 && stable < 0.2;
-  const why = looksEcg ? "regular R peaks"
+  const shape = templateCorr(ys, segPeaks, fs);
+  const looksEcg = shape >= SHAPE_MIN && peaks.length >= 8 && plausibleShare >= 0.8 && stable < 0.2;
+  const skipped = a > 0 || b < x.length ? ` (${f(a / fs, 1)}–${f(b / fs, 1)} s used, rest lead-off/settling)` : "";
+  const why = (looksEcg ? "regular R peaks"
+    : shape < SHAPE_MIN ? `beats do not repeat their shape (r = ${f(shape, 2)}; noise, counter or sequence byte)`
     : peaks.length < 8 ? `only ${peaks.length} peaks`
     : plausibleShare < 0.8 ? `${f(plausibleShare * 100)} % of intervals in ${RR_MIN}–${RR_MAX} ms`
-    : `intervals too irregular (median change ${f(stable * 100)} %)`;
+    : `intervals too irregular (median change ${f(stable * 100)} %)`) + skipped;
   return {
     fs, filt: y, peaks, rr, plausible: ok.length, hr: ok.length >= 3 ? 60000 / median(ok) : null, looksEcg,
-    score: (looksEcg ? 1000 : 0) + ok.length * plausibleShare, why,
+    score: (looksEcg ? 1000 : 0) + ok.length * plausibleShare * shape, why,
   };
 }
 

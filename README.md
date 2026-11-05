@@ -281,8 +281,18 @@ npm run ui                                      # tab "ECG test" lists all sessi
 If a channel looks like an ECG (≥ 8 regular R peaks): band-pass 0.5–40 Hz, R peaks, heart rate and RR intervals,
 comparison with `hr.csv` and the PPG beats (same rules as `ppg.ts`), and the delay R peak → pulse wave.
 Outputs `ecg_summary.txt`, `ecg_beats.csv` and `ecg_probe.svg` (10-s snippet raw + filtered with R peaks,
-RR over 60 s, lead detector). If the live dashboard is connected during the test (`npm run ui -- --serial …`),
-the Live tab shows the ECG with R peaks in real time.
+RR over 60 s, lead detector).
+
+**Live view:** start the dashboard first (`npm run ui -- --serial <IP:port>`), then start the ECG test on the watch.
+The Live tab then shows the ECG card at the top: last 10 s with R peaks, heart rate from the ECG, whether the finger
+is on the crown, and the RR intervals of the whole test. A saved test can be played back the same way:
+`npm run ui -- --replay ..\sessions\20261105_104704`.
+
+What the data looks like (first test, 2026-11-05): the ECG is value **v0** (signed, ±2^21 = ADC rail),
+v1 is a running sample counter and v2 a byte 0–255 without signal (sequence/checksum). After the finger touches the
+crown, v0 sits at the rail for 1–2 s and needs ~8 s to settle; the analysis skips that part automatically.
+A channel only counts as ECG if its beats repeat their shape (median correlation with the average beat ≥ 0.7);
+peaks picked from noise reach ~0.4. Without that check the first version took v2 and reported 152 bpm.
 
 If the sensor delivers nothing (`registered=false`, 0 events, or only constant values), that is the answer:
 a third-party app gets no ECG. No workarounds beyond that. Not a medical device, no diagnosis.

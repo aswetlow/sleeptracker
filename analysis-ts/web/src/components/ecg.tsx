@@ -37,9 +37,29 @@ function EcgTrace({ t, y, peaks, end, span, className }: { t: number[]; y: numbe
   );
 }
 
-/** Live ECG card on the Live tab, shown while the watch runs the ECG test. */
+/** RR intervals over time (dots), x = epoch ms. */
+function RrDots({ t, rr, className }: { t: number[]; rr: number[]; className?: string }) {
+  const pts = t.map((tt, i) => ({ t: tt, rr: rr[i] }));
+  return (
+    <ChartBox className={cn("h-40", className)}>
+      <ComposedChart margin={{ top: 8, right: 8, bottom: 0, left: 8 }}>
+        <CartesianGrid {...grid} />
+        <XAxis {...axis} dataKey="t" type="number" domain={["dataMin", "dataMax"]} tickFormatter={(v: number) => clock(v)} />
+        <YAxis {...axis} type="number" dataKey="rr" domain={["auto", "auto"]} width={56} tickFormatter={(v: number) => `${fmt(v)} ms`} />
+        <Tooltip content={({ payload }) => payload?.[0] ? (
+          <ChartTip title={clock(payload[0].payload.t)} rows={[{ label: "RR", value: `${payload[0].payload.rr} ms (${fmt(60000 / payload[0].payload.rr)} bpm)`, color: "var(--chart-1)" }]} />) : null} />
+        <Scatter data={pts} dataKey="rr" isAnimationActive={false} fill="var(--chart-1)" />
+      </ComposedChart>
+    </ChartBox>
+  );
+}
+
+/** Live ECG card on the Live tab, shown while the watch runs the ECG test (finger on the crown). */
 export function LiveEcgCard({ e, now }: { e: LiveEcg; now: number }) {
   const end = e.t.length ? e.t[e.t.length - 1] : now;
+  const stale = now - end > 3000;
+  const leadOn = e.lead != null && Number(e.lead.value.split(/\s+/)[0]) === 1;
+  const lastRr = e.rr.rr.length ? e.rr.rr[e.rr.rr.length - 1] : null;
   return (
     <Card>
       <CardHeader>
@@ -47,14 +67,26 @@ export function LiveEcgCard({ e, now }: { e: LiveEcg; now: number }) {
         <CardDescription>Last 10 s, band-pass 0.5–40 Hz · v{e.ch} · {fmt(e.fs, 0)} Hz · {e.events.toLocaleString("en-GB")} events</CardDescription>
         <CardAction className="flex flex-wrap gap-1.5">
           <Badge variant={e.looksEcg ? "success" : "warning"}>{e.looksEcg ? "R peaks found" : e.why}</Badge>
-          {e.hr != null && <Badge variant="secondary">{fmt(e.hr)} bpm</Badge>}
-          <Badge variant="outline">lead {e.lead?.value ?? "–"}</Badge>
+          <Badge variant={leadOn ? "success" : "outline"}>{e.lead ? (leadOn ? "finger on crown" : `lead ${e.lead.value}`) : "lead –"}</Badge>
+          {stale && <Badge variant="warning">no new samples</Badge>}
         </CardAction>
       </CardHeader>
-      <CardContent className="grid gap-2">
-        {e.t.length ? <EcgTrace t={e.t} y={e.y} peaks={e.peaks} end={end} span={10_000} /> :
-          <p className="py-10 text-center text-sm text-muted-foreground">Lead detector reports, but no ECG samples yet.</p>}
-        <Disclaimer />
+      <CardContent className="grid gap-4 lg:grid-cols-[1fr_14rem]">
+        <div className="grid gap-2">
+          {e.t.length ? <EcgTrace t={e.t} y={e.y} peaks={e.peaks} end={end} span={10_000} className="h-72" /> :
+            <p className="py-10 text-center text-sm text-muted-foreground">Lead detector reports, but no ECG samples yet.</p>}
+          <p className="text-xs text-muted-foreground">The first seconds after touching the crown the signal sits at the rail and settles; those seconds are skipped automatically.</p>
+        </div>
+        <div className="grid content-start gap-3">
+          <div className="rounded-lg border p-4">
+            <div className="flex items-center gap-1.5 text-xs text-muted-foreground"><HeartPulse className="size-3.5" />HR from ECG</div>
+            <div className={cn("text-5xl font-semibold tabular-nums", e.hr != null && e.looksEcg && "text-foreground", !e.looksEcg && "text-muted-foreground")}>{e.hr != null ? fmt(e.hr) : "–"}<span className="ml-1 text-base font-normal text-muted-foreground">bpm</span></div>
+            <div className="text-xs text-muted-foreground">median of the last 10 s{lastRr != null ? ` · last RR ${lastRr} ms` : ""}</div>
+          </div>
+          <div className="text-xs text-muted-foreground">{e.rr.rr.length} RR intervals so far</div>
+        </div>
+        {e.rr.rr.length > 1 && <div className="lg:col-span-2"><div className="mb-1 text-sm font-medium">RR intervals of this test</div><RrDots t={e.rr.t} rr={e.rr.rr} /></div>}
+        <div className="lg:col-span-2"><Disclaimer /></div>
       </CardContent>
     </Card>
   );
