@@ -75,7 +75,7 @@ def wrist_pose(acc: pd.DataFrame):
     g = acc.set_index(t)[["x", "y", "z"]].resample("1min").median()
     g = g.div(np.linalg.norm(g.values, axis=1), axis=0)
     prev = g.shift()
-    cos = (g * prev).sum(axis=1).clip(-1, 1)
+    cos = (g * prev).sum(axis=1, min_count=3).clip(-1, 1)   # erste Minute: kein Vorwert -> NaN statt 90°
     g["pose_change_deg"] = np.degrees(np.arccos(cos))
     return g
 

@@ -222,6 +222,23 @@ Diese Datei hilft bei der Fehlersuche.
 Kostet Akku (WLAN bleibt aktiv), also nicht über Nacht. Geht der Uhr-Bildschirm aus, kann das WLAN
 schlafen. Dann bricht die Live-Verbindung ab, die Aufzeichnung läuft aber weiter.
 
+## 9. TypeScript-Variante (`analysis-ts/`)
+Parallel zu den Python-Skripten, gleiche Regeln, gleiche Ausgabedateien. Braucht nur Node ≥ 20.
+```
+cd analysis-ts
+npm install
+npm run analyze -- ..\sessions\<session>       # wie analyze.py (ohne Plot)
+npm run ppg -- ..\sessions\<session>           # wie ppg.py (ohne Plot)
+npm run live -- --serial 192.168.178.35:<Port>  # wie live.py, Titel "SleepLogger live · TS"
+npm run live -- --demo
+npm test                                       # DSP gegen scipy-Referenzwerte
+```
+Geprüft gegen Python: `summary.txt` auf drei Nächten zeichengleich, `ppg_summary.txt` auf Testsession
+und PPG-Nacht gleich (Kandidaten, HRV). Einziger bekannter Unterschied: In flachen Signalstrecken
+(PPG-LED aus) findet Python ein paar hundert Schein-Schläge mit Amplitude ~1e-9 (Rechenrauschen),
+TypeScript weniger. Das ändert nur die Schlagzahl, nichts an HRV oder Kandidaten.
+Noch nicht portiert: Plots (`--plot`), `audio.py`, `breath_hold.py`, `nights.py`, `ppg_probe.py`, `simulate.py`.
+
 ## Grenzen (ehrlich)
 - **Atemfrequenz** wird nur in ruhigen Phasen geschätzt und hat einen Qualitätswert. Am Handgelenk
   ist das Signal sehr klein; erwarte viele unbrauchbare Fenster. Die Parameter sind nur an
