@@ -24,6 +24,8 @@ class MainActivity : ComponentActivity() {
     private lateinit var toggle: Button
     private lateinit var rawButton: Button
     private lateinit var markButton: Button
+    private lateinit var poseHeader: TextView
+    private val poseButtons = LinkedHashMap<String, Button>()
     private lateinit var ecgButton: Button
     private var pendingMode = Mode.NORMAL
     private var shownEcgResult: String? = null
@@ -72,6 +74,23 @@ class MainActivity : ComponentActivity() {
                     .putExtra(SensorLoggerService.EXTRA_TIME, System.currentTimeMillis()))
             }
         }
+        // Position calibration: lie in the position, tap it, keep still until the watch buzzes (25 s).
+        // Each position 2–4 times with different arm placements. position.py learns from these.
+        poseHeader = TextView(this).apply {
+            gravity = Gravity.CENTER; textSize = 12f; setPadding(0, 16, 0, 4)
+            text = "Calibrate position"
+        }
+        for ((label, title) in listOf("back" to "Back", "left" to "Left", "right" to "Right", "stomach" to "Stomach")) {
+            poseButtons[label] = Button(this).apply {
+                text = title
+                setOnClickListener {
+                    startService(Intent(this@MainActivity, SensorLoggerService::class.java)
+                        .setAction(SensorLoggerService.ACTION_POSE)
+                        .putExtra(SensorLoggerService.EXTRA_POSE, label)
+                        .putExtra(SensorLoggerService.EXTRA_TIME, System.currentTimeMillis()))
+                }
+            }
+        }
         // Round display: leave margins at the sides and top/bottom, everything in a ScrollView
         // (swipe or crown). Order: Felt at the top, status, Stop/Start at the bottom.
         val padX = (dm.widthPixels * 0.12).toInt()
@@ -89,6 +108,11 @@ class MainActivity : ComponentActivity() {
                 LinearLayout.LayoutParams.WRAP_CONTENT))
             addView(ecgButton, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT))
+            addView(poseHeader)
+            poseButtons.values.forEach {
+                addView(it, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT))
+            }
         }
         val scroll = ScrollView(this).apply {
             isFillViewport = true
@@ -132,6 +156,8 @@ class MainActivity : ComponentActivity() {
             rawButton.visibility = View.GONE
             ecgButton.visibility = View.GONE
             markButton.visibility = View.GONE
+            poseHeader.visibility = View.GONE
+            poseButtons.values.forEach { it.visibility = View.GONE }
             window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         } else if (SensorLoggerService.isRunning) {
             // keep it short so "Felt" and "Stop" fit on the screen without scrolling
@@ -142,10 +168,22 @@ class MainActivity : ComponentActivity() {
             rawButton.visibility = View.GONE
             ecgButton.visibility = View.GONE
             markButton.visibility = View.VISIBLE
+            val now = System.currentTimeMillis()
+            val holdLeft = (SensorLoggerService.poseHoldUntilMs - now) / 1000
+            poseHeader.text = if (holdLeft > 0) "Keep still: ${SensorLoggerService.poseHoldLabel} ${holdLeft} s"
+                else "Calibrate position"
+            for ((label, b) in poseButtons) {
+                val n = SensorLoggerService.poseCounts[label] ?: 0
+                b.text = label.replaceFirstChar { it.uppercase() } + if (n > 0) " ($n)" else ""
+                b.visibility = View.VISIBLE
+            }
+            poseHeader.visibility = View.VISIBLE
             // In the PPG test keep the screen on for the first 20 min so "Felt" takes a single tap.
             // After that (e.g. PPG overnight) let it turn off normally again.
-            val keepOn = SensorLoggerService.rawMode &&
-                System.currentTimeMillis() - SensorLoggerService.startedAtMs < 20 * 60_000L
+            // During position calibration keep it on until 2 min after the last hold, for the next tap.
+            val keepOn = (SensorLoggerService.rawMode &&
+                now - SensorLoggerService.startedAtMs < 20 * 60_000L) ||
+                now < SensorLoggerService.poseHoldUntilMs + 2 * 60_000L
             if (keepOn) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         } else {
@@ -159,6 +197,8 @@ class MainActivity : ComponentActivity() {
             rawButton.visibility = View.VISIBLE
             ecgButton.visibility = View.VISIBLE
             markButton.visibility = View.GONE
+            poseHeader.visibility = View.GONE
+            poseButtons.values.forEach { it.visibility = View.GONE }
             window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         }
     }

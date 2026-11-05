@@ -233,12 +233,15 @@ npm run live -- --serial 192.168.178.35:<port>  # like live.py, title "SleepLogg
 npm run live -- --demo
 npm run ui -- --demo                           # live analyzer with a React UI, same options as live
 npm run ecg -- ..\sessions\<session>           # ECG test report (section 10)
+npm run position -- classify ..\sessions\<session> --plot   # like position.py (section 11), plot as SVG
 npm test                                       # DSP against scipy reference values
 ```
 Checked against Python: `summary.txt` character-identical on three nights, `ppg_summary.txt` identical on the
 test session and a PPG night (candidates, HRV). The only known difference: in flat signal stretches
 (PPG LED off) Python finds a few hundred spurious beats with amplitude ~1e-9 (numerical noise),
 TypeScript fewer. That only changes the beat count, nothing about HRV or candidates.
+`position.ts` (calibrate / classify / validate) uses the same `analysis/pose_model.json` as Python, so you can
+calibrate with one and classify with the other; on a synthetic night with phone reference all outputs were identical.
 Not ported yet: plots (`--plot`), `audio.py`, `breath_hold.py`, `nights.py`, `ppg_probe.py`, `simulate.py`.
 
 ## 10. ECG test (experimental)
@@ -283,6 +286,46 @@ the Live tab shows the ECG with R peaks in real time.
 
 If the sensor delivers nothing (`registered=false`, 0 events, or only constant values), that is the answer:
 a third-party app gets no ECG. No workarounds beyond that. Not a medical device, no diagnosis.
+
+## 11. Sleep position (calibrated)
+The watch sees how the **wrist** lies, not the torso. With the arm under the pillow or on the hip
+the same body position looks completely different. So the model is personal and needs several arm
+placements per position. Whether it is good enough for you is answered by the phone check below,
+not by the calibration itself.
+
+**Calibrate** (once, ~10 min, then now and then a few more taps): start a recording, scroll down to
+"Calibrate position". Lie in the position, tap it (Back / Left / Right / Stomach), keep the watch arm
+still until the watch buzzes (25 s). Then change the arm placement and tap the same position again.
+2–4 placements per position, the ones you really sleep in. Watch on the left wrist: on your left
+side the arm is usually under the body or under the pillow, calibrate exactly those.
+```
+python position.py calibrate ..\sessions\<session>          # adds the taps to analysis/pose_model.json
+```
+Taps in a moving hold are discarded. A warning appears if two positions have templates that look
+the same; the watch cannot tell those apart.
+
+**Classify a night** (after `analyze.py`, so the per-position statistics have data):
+```
+python position.py classify ..\sessions\<session> --plot
+```
+Splits the night at movement events, assigns each still segment the closest template
+(`unknown` if none is within 35°, `uncertain` if two positions are within 8° of each other).
+Output: `positions.csv`, `position_summary.txt`, `positions.png`. Per position: time, movements/h,
+heart-rate spike episodes, breathing rate, heart rate and, with a Fitbit export, SpO2 and sleep stages.
+This is where positional effects show up (e.g. spike episodes almost only on the back).
+
+**Check it against the phone (do this before trusting the numbers):** one night with the phone on
+the sternum (tight shirt pocket or tape), **screen facing out, top edge towards the head**, recording
+the accelerometer, e.g. with the app "Sensor Logger" (enable Gravity and TotalAcceleration, export CSV).
+Do the calibration taps in that night as well; the phone then learns its own templates from them.
+```
+python position.py validate ..\sessions\<session> --phone "..\sessions\<sensor-logger-export>" --plot
+```
+The clocks of phone and watch are aligned automatically via the roll-overs (±2 min, otherwise
+`--offset-s`). Output: `position_validation.txt` with the share of time the watch gives a position,
+accuracy, confusion matrix, back detection (hit rate / false alarms) and the chance level for comparison;
+`position_validation.csv`, `position_validation.png`. Only if accuracy is clearly above chance and back
+detection is reliable is a vibration alarm for the back position worth building.
 
 ## Limits (honestly)
 - **Breathing rate** is only estimated in quiet phases and comes with a quality value. At the wrist

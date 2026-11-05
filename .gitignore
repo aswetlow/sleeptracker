@@ -6,3 +6,4 @@ local.properties
 __pycache__/
 sessions/
 *.tar
+pose_model.json

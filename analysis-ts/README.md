@@ -1,6 +1,6 @@
 # SleepLogger analysis in TypeScript
 
-TypeScript version of `../analysis/` (analyze, ppg, fitbit, live). No runtime dependencies for the analysis;
+TypeScript version of `../analysis/` (analyze, ppg, fitbit, live, position). No runtime dependencies for the analysis;
 the signal processing (Butterworth, sosfiltfilt, find_peaks, Welch, rolling medians) lives in
 `src/lib/` and is modelled on scipy/pandas. Usage: section 9 of the main README.
 
@@ -9,6 +9,7 @@ the signal processing (Butterworth, sosfiltfilt, find_peaks, Welch, rolling medi
 | `src/analyze.ts` + `src/fitbit.ts` | `analyze.py` + `fitbit.py` | summary.txt, per_minute.csv, movement_events.csv, breathing.csv, cvhr_*.csv, spo2_episodes.csv |
 | `src/ppg.ts` | `ppg.py` | ppg_summary.txt, ppg_beats.csv, ppg_events.csv, ppg_felt.csv |
 | `src/live.ts` + `src/live_page.html` | `live.py` | dashboard on http://localhost:8765 |
+| `src/position.ts` | `position.py` | pose_model.json (shared with Python), positions.csv, position_summary.txt, position_validation.csv/.txt, `--plot` as SVG |
 | `src/ecg_probe.ts` | – | ECG test: ecg_summary.txt, ecg_beats.csv, ecg_probe.svg (README section 10) |
 | `server/live_server.ts` + `web/` | – | live analyzer (React, shadcn style) on http://localhost:8765 |
 

@@ -31,9 +31,9 @@ const CVHR_MIN_CYCLES = 4;
 const MIN = 60000;
 
 type Cols = Record<string, Float64Array>;
-type Xyz = [Float64Array, Float64Array, Float64Array];
+export type Xyz = [Float64Array, Float64Array, Float64Array];
 
-function load(session: string) {
+export function load(session: string) {
   const acc = sortBy(readNumericCsv(join(session, "accel.csv"), ["epoch_ms", "x", "y", "z"]), "epoch_ms");
   const hrRaw = readNumericCsv(join(session, "hr.csv"), ["epoch_ms", "bpm", "accuracy"]);
   const keep: number[] = [];
@@ -45,7 +45,7 @@ function load(session: string) {
 }
 
 /** Resample onto a fixed grid; gaps > 1 s and edges become NaN. */
-function resample(df: Cols, grid: Float64Array): Xyz {
+export function resample(df: Cols, grid: Float64Array): Xyz {
   const t = df.epoch_ms;
   const xyz = (["x", "y", "z"] as const).map((c) => interp(grid, t, df[c])) as Xyz;
   for (let i = 0; i + 1 < t.length; i++) {
@@ -59,12 +59,12 @@ function resample(df: Cols, grid: Float64Array): Xyz {
   return xyz;
 }
 
-interface MoveEvent {
+export interface MoveEvent {
   start_ms: number; end_ms: number; duration_s: number; peak_activity: number; orientation_change_deg: number;
   hr_before?: number; hr_peak_after?: number; hr_delta?: number;
 }
 
-function movementEvents(grid: Float64Array, xyz: Xyz, fs: number) {
+export function movementEvents(grid: Float64Array, xyz: Xyz, fs: number) {
   const n = grid.length;
   const mag = new Float64Array(n);
   for (let i = 0; i < n; i++) mag[i] = Math.hypot(xyz[0][i], xyz[1][i], xyz[2][i]);

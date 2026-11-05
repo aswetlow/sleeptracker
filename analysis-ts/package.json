@@ -11,6 +11,7 @@
     "analyze": "tsx src/analyze.ts",
     "ppg": "tsx src/ppg.ts",
     "ecg": "tsx src/ecg_probe.ts",
+    "position": "tsx src/position.ts",
     "live": "tsx src/live.ts",
     "test": "tsx --test test/*.test.ts",
     "typecheck": "tsc --noEmit && tsc --noEmit -p web",
