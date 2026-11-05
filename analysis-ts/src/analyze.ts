@@ -1,11 +1,11 @@
 /**
- * Analyse einer SleepLogger-Nacht (TypeScript-Fassung von analysis/analyze.py).
+ * Analysis of one SleepLogger night (TypeScript version of analysis/analyze.py).
  *
- *     npx tsx src/analyze.ts <session-ordner> [--fitbit datei.json]
+ *     npx tsx src/analyze.ts <session-folder> [--fitbit file.json]
  *
- * Bewegungs-Events, Pulsreaktion, Atemfrequenz in ruhigen Phasen, periodische Pulsspitzen (CVHR),
- * Akku und – falls fitbit.json im Ordner liegt – der Abgleich mit Fitbit.
- * Schreibt dieselben Dateien wie die Python-Fassung: summary.txt, movement_events.csv, breathing.csv,
+ * Movement events, heart-rate response, breathing rate in quiet phases, periodic HR spikes (CVHR),
+ * battery and – if fitbit.json is in the folder – the comparison with Fitbit.
+ * Writes the same files as the Python version: summary.txt, movement_events.csv, breathing.csv,
  * cvhr_episodes.csv, cvhr_peaks.csv, per_minute.csv, spo2_episodes.csv.
  */
 import { existsSync, writeFileSync } from "node:fs";
@@ -44,7 +44,7 @@ function load(session: string) {
   return { acc, gyro, hr };
 }
 
-/** Auf festes Raster bringen; Lücken > 1 s und Ränder werden NaN. */
+/** Resample onto a fixed grid; gaps > 1 s and edges become NaN. */
 function resample(df: Cols, grid: Float64Array): Xyz {
   const t = df.epoch_ms;
   const xyz = (["x", "y", "z"] as const).map((c) => interp(grid, t, df[c])) as Xyz;
@@ -118,7 +118,7 @@ function hrResponse(events: MoveEvent[], hr: Cols) {
   }
 }
 
-/** Atemzüge/min aus dem ersten Autokorrelations-Peak; Qualität = Höhe des Peaks. */
+/** Breaths/min from the first autocorrelation peak; quality = height of the peak. */
 function autocorrRate(x: Float64Array, fs: number): [number, number] {
   const m = mean(x), sd = std(x, 0) + 1e-12;
   const z = x.map((v) => (v - m) / sd);
@@ -157,7 +157,7 @@ function breathingEstimates(grid: Float64Array, sources: [string, Xyz][], activi
     let [best, rate, quality] = est.reduce((a, b) => (b[2] > a[2] ? b : a));
     if (est.length === 2) {
       const [[, r1, q1], [, r2, q2]] = est;
-      if (Math.abs(r1 - r2) <= 2) { rate = (r1 * q1 + r2 * q2) / (q1 + q2); quality = Math.max(q1, q2); best = "beide"; }
+      if (Math.abs(r1 - r2) <= 2) { rate = (r1 * q1 + r2 * q2) / (q1 + q2); quality = Math.max(q1, q2); best = "both"; }
     }
     out.push({ t: grid[i + (n >> 1)], rate, quality, source: best });
   }
@@ -251,7 +251,7 @@ function perMinute(grid: Float64Array, activity: Float64Array, events: MoveEvent
 function main() {
   const args = process.argv.slice(2);
   const session = args.find((a, i) => !a.startsWith("--") && !["--fitbit", "--fs"].includes(args[i - 1]));
-  if (!session) { console.error("Aufruf: tsx src/analyze.ts <session> [--fitbit datei]"); process.exit(2); }
+  if (!session) { console.error("Usage: tsx src/analyze.ts <session> [--fitbit file]"); process.exit(2); }
   const fs = Number(argValue(args, "--fs") ?? 25);
 
   const { acc, gyro, hr } = load(session);
@@ -281,34 +281,34 @@ function main() {
   const good = breath.filter((b) => b.quality >= BREATH_MIN_QUALITY);
   const bat = batteryDrain(session);
   const lines = [
-    `Aufzeichnung: ${f(hours, 2)} h, Datenlücken: ${f(gapS / 60, 1)} min`,
-    ...(bat ? [`Akku: ${f(bat[0])} % → ${f(bat[1])} % (${f(bat[2], 1)} %/h, 8 h ≈ ${f(bat[2] * 8)} %)`] : []),
-    `Bewegungs-Events: ${events.length} (${f(events.length / Math.max(hours, 1e-9), 1)}/h)`,
+    `Recording: ${f(hours, 2)} h, data gaps: ${f(gapS / 60, 1)} min`,
+    ...(bat ? [`Battery: ${f(bat[0])} % → ${f(bat[1])} % (${f(bat[2], 1)} %/h, 8 h ≈ ${f(bat[2] * 8)} %)`] : []),
+    `Movement events: ${events.length} (${f(events.length / Math.max(hours, 1e-9), 1)}/h)`,
   ];
   if (events.length) {
-    lines.push(`  davon Lagewechsel (>30°): ${events.filter((e) => e.orientation_change_deg > 30).length}`,
-      `  mittlere Dauer: ${f(mean(events.map((e) => e.duration_s)), 1)} s`);
-    if (hr.bpm.length) lines.push(`  mittlere Pulsreaktion: +${f(mean(events.map((e) => e.hr_delta ?? NaN)), 1)} bpm`);
+    lines.push(`  of which posture changes (>30°): ${events.filter((e) => e.orientation_change_deg > 30).length}`,
+      `  mean duration: ${f(mean(events.map((e) => e.duration_s)), 1)} s`);
+    if (hr.bpm.length) lines.push(`  mean HR response: +${f(mean(events.map((e) => e.hr_delta ?? NaN)), 1)} bpm`);
   }
-  if (hr.bpm.length) lines.push(`Puls: min ${f(min(hr.bpm))}, Median ${f(median(hr.bpm))}, max ${f(max(hr.bpm))} bpm (${hr.bpm.length} Werte)`);
+  if (hr.bpm.length) lines.push(`Heart rate: min ${f(min(hr.bpm))}, median ${f(median(hr.bpm))}, max ${f(max(hr.bpm))} bpm (${hr.bpm.length} values)`);
   const src = new Map<string, number>();
   for (const b of good) src.set(b.source, (src.get(b.source) ?? 0) + 1);
-  lines.push(`Atemfrequenz: ${good.length} von ${breath.length} ruhigen Fenstern mit Qualität ≥${BREATH_MIN_QUALITY}` +
-    (good.length ? `, Median ${f(median(good.map((b) => b.rate)), 1)}/min, Quelle: ` +
+  lines.push(`Breathing rate: ${good.length} of ${breath.length} quiet windows with quality ≥${BREATH_MIN_QUALITY}` +
+    (good.length ? `, median ${f(median(good.map((b) => b.rate)), 1)}/min, source: ` +
       [...src.entries()].sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${v}`).join(", ") : ""));
   if (cvhr.length) {
     const mins = cvhr.reduce((s, e) => s + e.end_ms - e.start_ms, 0) / 60000;
-    lines.push(`Periodische Pulsspitzen-Episoden: ${cvhr.length} (${f(mins)} min, ${f(cvhr.reduce((s, e) => s + e.cycles, 0) / Math.max(hours, 1e-9), 1)} Zyklen/h)`,
-      `  mittlerer Zyklus ${f(mean(cvhr.map((e) => e.mean_cycle_s)))} s, Anstieg ${f(mean(cvhr.map((e) => e.mean_rise_bpm)), 1)} bpm, mit Bewegung: ${f(mean(cvhr.map((e) => e.share_with_movement)) * 100)} %`,
-      "  Hinweis: Muster passt zu Atmungsstörungen, ist aber kein Nachweis.");
-  } else lines.push("Periodische Pulsspitzen-Episoden: keine");
+    lines.push(`Periodic HR spike episodes: ${cvhr.length} (${f(mins)} min, ${f(cvhr.reduce((s, e) => s + e.cycles, 0) / Math.max(hours, 1e-9), 1)} cycles/h)`,
+      `  mean cycle ${f(mean(cvhr.map((e) => e.mean_cycle_s)))} s, rise ${f(mean(cvhr.map((e) => e.mean_rise_bpm)), 1)} bpm, with movement: ${f(mean(cvhr.map((e) => e.share_with_movement)) * 100)} %`,
+      "  Note: the pattern fits sleep-disordered breathing but is no proof.");
+  } else lines.push("Periodic HR spike episodes: none");
   if (fb && exp) {
-    lines.push(`(Fitbit-Export: ${basename(exp.path)})`, ...F.summaryLines(fb, minutes, breath, moveStarts, BREATH_MIN_QUALITY).slice(1));
+    lines.push(`(Fitbit export: ${basename(exp.path)})`, ...F.summaryLines(fb, minutes, breath, moveStarts, BREATH_MIN_QUALITY).slice(1));
     for (const e of spo2Eps ?? []) {
       lines.push(`  SpO2 < ${F.LOW_SPO2} %: ${hm(e.start)}–${hm(e.end)} (${e.minutes} min, min ${f(e.spo2_min, 1)} %, `
-        + `Armlage ±${f(e.max_pose_change_deg)}°, Phase ${e.stage ?? "None"}) → ${e.verdict}`);
+        + `arm pose ±${f(e.max_pose_change_deg)}°, stage ${e.stage ?? "None"}) → ${e.verdict}`);
     }
-    if (spo2Eps?.length) lines.push("  Hinweis: Uhr-SpO2 ist am Handgelenk störanfällig. Wiederholt sich das, mit Finger-Pulsoximeter prüfen.");
+    if (spo2Eps?.length) lines.push("  Note: watch SpO2 at the wrist is error-prone. If this repeats, check with a finger pulse oximeter.");
   }
   const summary = lines.join("\n");
   console.log(summary);

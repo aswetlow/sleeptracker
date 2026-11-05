@@ -1,8 +1,8 @@
 """
-Erster Blick in die undokumentierten Rohsensoren (raw_ppg.csv, raw_hr_ext.csv, raw_ppg_ctrl.csv).
+First look at the undocumented raw sensors (raw_ppg.csv, raw_hr_ext.csv, raw_ppg_ctrl.csv).
 
-Für jede Datei: Abtastrate, Anzahl Werte pro Event, Statistik pro Kanal, und ob ein Kanal
-nach Pulswelle (PPG) oder nach Schlagintervallen in ms (hr_ext) aussieht. Plot der ersten 20 s.
+For each file: sample rate, number of values per event, statistics per channel, and whether a channel
+looks like a pulse wave (PPG) or like beat intervals in ms (hr_ext). Plot of the first 20 s.
 
     python ppg_probe.py ../sessions/<session> [--plot]
 """
@@ -25,7 +25,7 @@ def load_raw(path: Path):
 
 
 def pulse_rate(x, fs):
-    """Dominante Frequenz im Pulsband 0,7–3 Hz (42–180 bpm) und wie deutlich sie ist."""
+    """Dominant frequency in the pulse band 0.7–3 Hz (42–180 bpm) and how pronounced it is."""
     x = x - np.nanmean(x)
     x = np.nan_to_num(x)
     if len(x) < fs * 8 or np.std(x) == 0:
@@ -39,19 +39,19 @@ def pulse_rate(x, fs):
 
 
 def describe(name, df, vals, hr_ref):
-    print(f"\n=== {name}: {len(df)} Events")
+    print(f"\n=== {name}: {len(df)} events")
     if df.empty:
-        print("  keine Daten (Sensor liefert nichts an Dritt-Apps oder braucht Aktivierung)")
+        print("  no data (the sensor delivers nothing to third-party apps or needs activation)")
         return
     dt = np.diff(df.epoch_ms.values)
     fs = 1000 / np.median(dt[dt > 0]) if (dt > 0).any() else np.nan
-    print(f"  Dauer {(df.epoch_ms.iloc[-1] - df.epoch_ms.iloc[0]) / 1000:.1f} s, Rate ≈ {fs:.1f} Hz, "
-          f"Werte/Event: {df.n.value_counts().to_dict()}, accuracy: {df.accuracy.value_counts().to_dict()}")
-    print(f"  Zeitstempel-Duplikate: {(dt == 0).mean() * 100:.0f} %  (hoch = Sensor liefert Blöcke)")
+    print(f"  duration {(df.epoch_ms.iloc[-1] - df.epoch_ms.iloc[0]) / 1000:.1f} s, rate ≈ {fs:.1f} Hz, "
+          f"values/event: {df.n.value_counts().to_dict()}, accuracy: {df.accuracy.value_counts().to_dict()}")
+    print(f"  duplicate timestamps: {(dt == 0).mean() * 100:.0f} %  (high = sensor delivers blocks)")
     st = vals.describe().T[["mean", "std", "min", "max"]]
     st["unique"] = vals.nunique()
     print(st.round(3).to_string())
-    print("  erste Zeilen:")
+    print("  first rows:")
     print(df.head(5).to_string(index=False))
 
     if np.isfinite(fs) and fs >= 10:
@@ -60,13 +60,13 @@ def describe(name, df, vals, hr_ref):
                 continue
             bpm, sharp = pulse_rate(vals[c].values.astype(float), fs)
             if sharp > 0.15:
-                print(f"  {c}: Pulsband-Peak {bpm:.0f} bpm (Schärfe {sharp:.2f})"
-                      + (f", HeartRate-Sensor im Mittel {hr_ref:.0f}" if np.isfinite(hr_ref) else ""))
+                print(f"  {c}: pulse band peak {bpm:.0f} bpm (sharpness {sharp:.2f})"
+                      + (f", heart-rate sensor mean {hr_ref:.0f}" if np.isfinite(hr_ref) else ""))
     for c in vals.columns:
         s = vals[c].dropna()
         if len(s) and s.between(300, 2000).mean() > 0.8:
             implied = 60000 / s.median()
-            print(f"  {c}: liegt zu >80 % in 300–2000 → könnten Schlagintervalle in ms sein "
+            print(f"  {c}: >80 % within 300–2000 → could be beat intervals in ms "
                   f"(≙ {implied:.0f} bpm)")
 
 
@@ -82,7 +82,7 @@ def main():
         hr_ref = hr.bpm[hr.bpm > 0].mean()
     sensors = args.session / "sensors.txt"
     if sensors.exists():
-        print("Sensoren mit google/ppg im Namen:")
+        print("Sensors with google/ppg in the name:")
         for line in sensors.read_text(encoding="utf-8").splitlines():
             if "google" in line.lower() or "ppg" in line.lower():
                 print("  " + line)
@@ -95,7 +95,7 @@ def main():
             describe(f, df, vals, hr_ref)
             loaded[f] = vals
         else:
-            print(f"\n=== {f}: nicht vorhanden")
+            print(f"\n=== {f}: not present")
 
     if args.plot and loaded:
         import matplotlib

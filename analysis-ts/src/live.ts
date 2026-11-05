@@ -1,13 +1,13 @@
 /**
- * Live-Dashboard: Uhr -> ADB-Tunnel -> Laptop -> Browser (TypeScript-Fassung von analysis/live.py).
+ * Live dashboard: watch -> ADB tunnel -> laptop -> browser (TypeScript version of analysis/live.py).
  *
  *     npx tsx src/live.ts --serial 192.168.178.35:41773
  *     npx tsx src/live.ts --demo
  *     npx tsx src/live.ts --replay ../sessions/<session> [--speed 4]
  *
- * Gleiches Protokoll wie live.py (Uhr verbindet sich auf 127.0.0.1:9000), gleiche Seite auf
- * http://localhost:8765. Alles Empfangene wird nach sessions/live/live_<Zeit>.txt mitgeschrieben.
- * Moderneres Dashboard (React): npm run ui -- --demo (siehe server/live_server.ts).
+ * Same protocol as live.py (the watch connects to 127.0.0.1:9000), same page on
+ * http://localhost:8765. Everything received is recorded to sessions/live/live_<time>.txt.
+ * More modern dashboard (React): npm run ui -- --demo (see server/live_server.ts).
  */
 import { readFileSync, type WriteStream } from "node:fs";
 import { createServer as createHttp } from "node:http";
@@ -44,10 +44,10 @@ function main() {
   });
   srv.listen(http, "127.0.0.1", () => {
     const url = `http://localhost:${http}`;
-    console.log(`Dashboard: ${url}  (Strg+C beendet)`);
+    console.log(`Dashboard: ${url}  (Ctrl+C to stop)`);
     if (!has("--no-browser")) setTimeout(() => openBrowser(url), 1000);
   });
-  process.on("SIGINT", () => { console.log("\nbeendet"); rec?.end(); process.exit(0); });
+  process.on("SIGINT", () => { console.log("\nstopped"); rec?.end(); process.exit(0); });
 }
 
 main();

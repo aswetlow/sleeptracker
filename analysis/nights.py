@@ -1,15 +1,15 @@
 """
-Mehrnächte-Übersicht: liest mehrere bereits mit analyze.py ausgewertete Session-Ordner
-(per_minute.csv, breathing.csv, movement_events.csv, events.csv, optional fitbit.json)
-und schreibt eine Tabelle pro Nacht.
+Multi-night overview: reads several session folders already analysed with analyze.py
+(per_minute.csv, breathing.csv, movement_events.csv, events.csv, optionally fitbit.json)
+and writes one table row per night.
 
-Optionale Notiz pro Nacht: notes.txt im Session-Ordner mit key=value-Zeilen, z. B.
-    pflaster=ja
-    notiz=Toilette 04:00
+Optional note per night: notes.txt in the session folder with key=value lines, e.g.
+    mouth_tape=yes
+    note=toilet 04:00
 
-Aufruf:
+Usage:
     python nights.py ../sessions/20261030_224900 ../sessions/20261031_235707 ... [--out nights.csv]
-    python nights.py ../sessions/*            (alle Ordner mit per_minute.csv)
+    python nights.py ../sessions/*            (all folders with per_minute.csv)
 """
 import argparse
 from pathlib import Path
@@ -54,8 +54,8 @@ def night_row(session: Path):
     mv = pd.read_csv(session / "movement_events.csv")
     hours = len(m) / 60
 
-    r = {"nacht": session.name, "start": m.index[0].strftime("%d.%m. %H:%M"),
-         "dauer_h": round(hours, 1)}
+    r = {"night": session.name, "start": m.index[0].strftime("%Y-%m-%d %H:%M"),
+         "duration_h": round(hours, 1)}
     r.update(read_notes(session))
 
     data, _ = F.find_export(session)
@@ -64,37 +64,37 @@ def night_row(session: Path):
         fb = F.load(data)
         sl, v = fb["sleep"], fb["vitals"]
         day = data["fitbit"].get("dayBefore") or {}
-        r.update({"schlaf_min": sl.get("minutesAsleep"), "effizienz": sl.get("efficiency"),
-                  "tief_min": sl.get("deepMinutes"), "rem_min": sl.get("remMinutes"),
-                  "wach_min": sl.get("wakeMinutes"), "hrv_ms": v.get("hrv"),
-                  "ruhepuls_fitbit": v.get("restingHeartRate"),
-                  "atem_fitbit": v.get("breathingRate"), "schritte_vortag": day.get("steps")})
+        r.update({"sleep_min": sl.get("minutesAsleep"), "efficiency": sl.get("efficiency"),
+                  "deep_min": sl.get("deepMinutes"), "rem_min": sl.get("remMinutes"),
+                  "wake_min": sl.get("wakeMinutes"), "hrv_ms": v.get("hrv"),
+                  "resting_hr_fitbit": v.get("restingHeartRate"),
+                  "breathing_fitbit": v.get("breathingRate"), "steps_day_before": day.get("steps")})
         if not fb["stages"].empty:
             stage = F.stage_at(fb["stages"], m.index)
             asleep = m[pd.Series(stage, index=m.index).isin(["light", "deep", "rem"])]
             br["stage"] = F.stage_at(fb["stages"], br.t)
             for st in ("deep", "light", "rem"):
                 s = br[br.stage == st].breaths_per_min
-                r[f"atem_{st}"] = round(s.median(), 1) if len(s) else np.nan
+                r[f"breathing_{st}"] = round(s.median(), 1) if len(s) else np.nan
             deep_min = m[pd.Series(stage, index=m.index) == "deep"]
-            r["puls_tief"] = round(deep_min.hr_mean.median(), 1) if len(deep_min) else np.nan
+            r["hr_deep"] = round(deep_min.hr_mean.median(), 1) if len(deep_min) else np.nan
         room = fb["room"]
         if not room.empty:
-            r["raum_c"] = round(room.temperature.mean(), 1)
-            r["raum_rf"] = round(room.humidity.mean())
+            r["room_c"] = round(room.temperature.mean(), 1)
+            r["room_rh"] = round(room.humidity.mean())
         if "spo2" in m:
-            r["spo2_mittel"] = round(m.spo2.mean(), 1)
-            r["spo2_unter90_min"] = int((m.spo2 < F.LOW_SPO2).sum())
+            r["spo2_mean"] = round(m.spo2.mean(), 1)
+            r["spo2_below90_min"] = int((m.spo2 < F.LOW_SPO2).sum())
 
-    r.update({"puls_schlaf_median": round(asleep.hr_mean.median(), 1),
-              "puls_min": int(m.hr_min.min()),
-              "atem_median": round(br.breaths_per_min.median(), 1),
-              "atem_streuung": round(br.breaths_per_min.std(), 2),
-              "bewegungen_h": round(len(mv) / hours, 1),
-              "lagewechsel": int((mv.orientation_change_deg > 30).sum()),
-              "cvhr_episoden": len(pd.read_csv(session / "cvhr_episodes.csv"))
+    r.update({"hr_asleep_median": round(asleep.hr_mean.median(), 1),
+              "hr_min": int(m.hr_min.min()),
+              "breathing_median": round(br.breaths_per_min.median(), 1),
+              "breathing_std": round(br.breaths_per_min.std(), 2),
+              "movements_per_h": round(len(mv) / hours, 1),
+              "posture_changes": int((mv.orientation_change_deg > 30).sum()),
+              "cvhr_episodes": len(pd.read_csv(session / "cvhr_episodes.csv"))
               if (session / "cvhr_episodes.csv").stat().st_size > 1 else 0,
-              "akku_pro_h": round(battery_rate(session), 1)})
+              "battery_pct_per_h": round(battery_rate(session), 1)})
     return r
 
 
@@ -105,12 +105,12 @@ def main():
     args = ap.parse_args()
     rows = [night_row(s) for s in sorted(args.sessions) if (s / "per_minute.csv").exists()]
     if not rows:
-        raise SystemExit("Keine ausgewerteten Sessions gefunden (erst analyze.py laufen lassen).")
-    df = pd.DataFrame(rows).set_index("nacht")
+        raise SystemExit("No analysed sessions found (run analyze.py first).")
+    df = pd.DataFrame(rows).set_index("night")
     df.to_csv(args.out)
     with pd.option_context("display.max_columns", None, "display.width", 200):
         print(df.T.to_string())
-    print(f"\nTabelle: {args.out}")
+    print(f"\nTable: {args.out}")
 
 
 if __name__ == "__main__":

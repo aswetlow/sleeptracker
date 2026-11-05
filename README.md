@@ -1,256 +1,256 @@
-# SleepLogger für Pixel Watch 1
+# SleepLogger for Pixel Watch 1
 
-Wear-OS-App, die nachts Beschleunigung und Gyroskop (je 25 Hz) und Puls (~1 Hz) mit Zeitstempel in CSV schreibt,
-plus ein Python-Skript zur Auswertung.
+A Wear OS app that writes acceleration and gyroscope (25 Hz each) and heart rate (~1 Hz) with timestamps
+to CSV at night, plus Python scripts for analysis.
 
-## 1. Uhr vorbereiten
-1. Einstellungen › System › Info › Versionen › 7× auf **Build-Nummer** tippen.
-2. Einstellungen › Entwickleroptionen › **ADB-Debugging** und **Kabelloses Debugging** an.
-3. Uhr und Rechner ins selbe WLAN. Unter „Kabelloses Debugging“ › **Neues Gerät koppeln**:
+## 1. Prepare the watch
+1. Settings › System › About › Versions › tap **Build number** 7×.
+2. Settings › Developer options › turn on **ADB debugging** and **Wireless debugging**.
+3. Put the watch and the computer on the same Wi-Fi. Under "Wireless debugging" › **Pair new device**:
    ```
-   adb pair <IP>:<Pairing-Port> <Code>
-   adb connect <IP>:<Debug-Port>      # Port steht oben unter "Kabelloses Debugging"
+   adb pair <IP>:<pairing-port> <code>
+   adb connect <IP>:<debug-port>      # the port is shown at the top under "Wireless debugging"
    adb devices
    ```
 
-## 2. App bauen und installieren
-- Ordner in Android Studio öffnen, Gradle-Sync abwarten (lädt SDK 35 nach, falls es fehlt).
-- Uhr oben als Zielgerät wählen, **Run**. Oder per Terminal: `./gradlew installDebug`.
-- App auf der Uhr öffnen, **Start**, Berechtigungen erlauben. Läuft, solange die Benachrichtigung da ist.
-- Morgens App öffnen, **Stopp**.
+## 2. Build and install the app
+- Open the folder in Android Studio and wait for the Gradle sync (downloads SDK 35 if missing).
+- Pick the watch as the target device at the top, **Run**. Or from a terminal: `./gradlew installDebug`.
+- Open the app on the watch, **Start**, allow the permissions. It runs as long as the notification is shown.
+- In the morning open the app, **Stop**.
 
-Tipp: Kabelloses Debugging nachts aus, und vor der ersten Nacht einen 30-Minuten-Test machen.
+Tip: turn wireless debugging off at night, and do a 30-minute test before the first night.
 
-## 3. Daten exportieren
-Die Dateien liegen im privaten App-Ordner; bei einem Debug-Build kommt man per `run-as` dran:
+## 3. Export the data
+The files are in the app's private folder; with a debug build you can reach them via `run-as`:
 ```
-adb devices          # Uhr taucht beim WLAN-Debugging oft doppelt auf -> mit -s <Name> wählen
-adb -s <IP:Port> shell run-as de.alex.sleeplogger ls files/sessions
+adb devices          # with Wi-Fi debugging the watch often shows up twice -> pick one with -s <name>
+adb -s <IP:port> shell run-as de.alex.sleeplogger ls files/sessions
 ```
-Export (unter Windows über `cmd`, weil PowerShell bei `>` Binärdaten als UTF-16 zerstört):
+Export (on Windows via `cmd`, because PowerShell's `>` corrupts binary data as UTF-16):
 ```
-cmd /c "adb -s <IP:Port> exec-out run-as de.alex.sleeplogger tar c -C files sessions > sessions.tar"
+cmd /c "adb -s <IP:port> exec-out run-as de.alex.sleeplogger tar c -C files sessions > sessions.tar"
 tar xf sessions.tar
 ```
-Konkret für Alex' Uhr (der Port ändert sich, sobald kabelloses Debugging neu startet; aktuellen
-Port unter „Kabelloses Debugging“ auf der Uhr oder per `adb devices` nachsehen):
+Concretely for Alex's watch (the port changes whenever wireless debugging restarts; look up the current
+port under "Wireless debugging" on the watch or with `adb devices`):
 ```
 cmd /c "adb -s 192.168.178.35:44691 exec-out run-as de.alex.sleeplogger tar c -C files sessions > sessions.tar"
 ```
 
-Nur eine Nacht holen statt aller:
+Fetch a single night instead of all:
 ```
-cmd /c "adb -s <IP:Port> exec-out run-as de.alex.sleeplogger tar c -C files sessions/20261103_225540 > session.tar"
+cmd /c "adb -s <IP:port> exec-out run-as de.alex.sleeplogger tar c -C files sessions/20261103_225540 > session.tar"
 tar xf session.tar
 ```
 
-Aufräumen auf der Uhr (endgültig, vorher prüfen, dass die Nacht lokal in `sessions\` liegt):
+Clean up on the watch (permanent – first check that the night is in your local `sessions\`):
 ```
-adb -s <IP:Port> shell run-as de.alex.sleeplogger rm -r files/sessions/20261030_224900   # eine Nacht
-adb -s <IP:Port> shell run-as de.alex.sleeplogger rm -r files/sessions                   # alle (nicht während einer Aufnahme)
+adb -s <IP:port> shell run-as de.alex.sleeplogger rm -r files/sessions/20261030_224900   # one night
+adb -s <IP:port> shell run-as de.alex.sleeplogger rm -r files/sessions                   # all (not during a recording)
 ```
-Der Ordner `sessions` wird beim nächsten Start automatisch neu angelegt.
+The `sessions` folder is recreated automatically on the next start.
 
-Pro Nacht entsteht `sessions/<Startzeit>/` mit:
-- `accel.csv` – `epoch_ms,x,y,z` (m/s², inkl. Schwerkraft)
+Each night produces `sessions/<start time>/` with:
+- `accel.csv` – `epoch_ms,x,y,z` (m/s², including gravity)
 - `gyro.csv` – `epoch_ms,x,y,z` (rad/s)
-- `hr.csv` – `epoch_ms,bpm,accuracy` (accuracy 0–3, <2 wird bei der Analyse verworfen)
-- `events.csv` – Start/Stopp, verwendete Sensoren, ob Wake-up-Sensor/Wakelock aktiv war, Akkustand alle 10 min
+- `hr.csv` – `epoch_ms,bpm,accuracy` (accuracy 0–3, <2 is discarded in the analysis)
+- `events.csv` – start/stop, sensors used, whether a wake-up sensor/wakelock was active, battery level every 10 min
 
-Größe: ~25 MB pro 8 h und Sensor-CSV.
+Size: ~25 MB per 8 h and sensor CSV.
 
-## 4. Auswerten
+## 4. Analysis
 ```
 pip install -r analysis/requirements.txt
 python analysis/analyze.py sessions/20261030_230512 --plot
 ```
-Ergebnis im Session-Ordner:
-- `summary.txt` – Überblick
-- `movement_events.csv` – Start, Dauer, Lagewechsel in Grad, Puls vorher/Spitze danach
-- `breathing.csv` – Atemfrequenz pro 2-min-Fenster (alle 30 s), Qualität 0–1, Quelle (accel/gyro/beide)
-- `cvhr_episodes.csv` – Episoden periodischer Pulsspitzen (siehe unten)
+Results in the session folder:
+- `summary.txt` – overview
+- `movement_events.csv` – start, duration, posture change in degrees, heart rate before / peak after
+- `breathing.csv` – breathing rate per 2-min window (every 30 s), quality 0–1, source (accel/gyro/both)
+- `cvhr_episodes.csv` – episodes of periodic heart-rate spikes (see below)
 - `per_minute.csv`, `night.png`
 
-Stellschrauben oben im Skript: `THRESHOLD_K`, `MIN_THRESHOLD` (Bewegung), `BREATH_MIN_QUALITY`,
+Tuning knobs at the top of the script: `THRESHOLD_K`, `MIN_THRESHOLD` (movement), `BREATH_MIN_QUALITY`,
 `CVHR_MIN_RISE_BPM`, `CVHR_CYCLE_S`, `CVHR_MIN_CYCLES`.
 
-### Fitbit-Export (optional)
-Liegt im Session-Ordner eine `fitbit.json` (der Nacht-Export mit `"fitbit": {...}`), liest `analyze.py`
-sie automatisch mit ein (oder `--fitbit pfad/zur/datei`). Dann kommen dazu:
-- Atemfrequenz der Uhr pro Schlafphase neben den Fitbit-Werten, Puls-Abgleich, Bewegung pro Phase
-- SpO2: Minuten unter 90 %, Entsättigungen, und `spo2_episodes.csv` mit Episoden ≥5 min unter 90 %.
-  Pro Episode wird geprüft, ob der Arm währenddessen unbewegt lag, ob sie mit einer Bewegung endet
-  und ob der Puls reagiert. Alle drei = „vermutlich Lage-Artefakt“ (z. B. Arm eingeklemmt).
-- Raumklima (tado), Plot mit Hypnogramm, Fitbit-Puls und SpO2
+### Fitbit export (optional)
+If the session folder contains a `fitbit.json` (the night export with `"fitbit": {...}`), `analyze.py`
+reads it automatically (or `--fitbit path/to/file`). That adds:
+- the watch's breathing rate per sleep stage next to the Fitbit values, heart-rate comparison, movement per stage
+- SpO2: minutes below 90 %, desaturations, and `spo2_episodes.csv` with episodes of ≥5 min below 90 %.
+  Each episode is checked for whether the arm stayed still, whether it ends with a movement
+  and whether the heart rate reacts. All three = "probably a pose artifact" (e.g. arm pinned).
+- room climate (tado), plot with hypnogram, Fitbit heart rate and SpO2
 
-### Atemfrequenz
-Nur in ruhigen Fenstern. Pro Sensor Bandpass 0,1–0,5 Hz, Hauptkomponente über alle drei Achsen,
-Periode per Autokorrelation. Qualität = Höhe des Autokorrelations-Peaks. Reines Rauschen liegt
-in Tests bei ≤0,25, daher die Schwelle 0,4. Gyro und Accelerometer werden getrennt geschätzt und
-bei Übereinstimmung gemittelt; Ausreißer gegen den geglätteten Verlauf werden abgewertet.
+### Breathing rate
+Only in quiet windows. Per sensor a band-pass of 0.1–0.5 Hz, principal component across all three axes,
+period via autocorrelation. Quality = height of the autocorrelation peak. Pure noise scores
+≤0.25 in tests, hence the threshold of 0.4. Gyro and accelerometer are estimated separately and
+averaged when they agree; outliers against the smoothed trend are down-weighted.
 
-### Periodische Pulsspitzen (CVHR)
-Am Ende einer Atempause kommt typischerweise eine kurze Weckreaktion mit Pulssprung um 10–20 bpm.
-Wiederholt sich das alle 25–100 s mindestens 4-mal, markiert das Skript eine Episode, inkl. Anteil
-der Spitzen mit gleichzeitiger Bewegung. Das ist ein Hinweis, kein Apnoe-Nachweis und kein AHI.
+### Periodic heart-rate spikes (CVHR)
+At the end of a breathing pause there is typically a brief arousal with a heart-rate jump of 10–20 bpm.
+If this repeats every 25–100 s at least 4 times, the script flags an episode, including the share
+of spikes with simultaneous movement. This is a hint, not proof of apnea and not an AHI.
 
-### Mehrere Nächte vergleichen
-Erst jede Nacht mit `analyze.py` auswerten, dann:
+### Compare several nights
+First analyse each night with `analyze.py`, then:
 ```
 python nights.py ..\sessions\20261030_224900 ..\sessions\20261031_235707 ..\sessions\20261101_231037 --out nights.csv
 ```
-Pro Nacht eine Spalte: Schlaf und Phasen (Fitbit), HRV, Ruhepuls, Puls im Schlaf und im Tiefschlaf,
-Atemfrequenz pro Phase, Bewegungen/h, Lagewechsel, SpO2, CVHR, Akku, Raumklima, Schritte am Vortag.
-Für A/B-Vergleiche (z. B. Mundpflaster) eine `notes.txt` in den Session-Ordner legen:
+One column per night: sleep and stages (Fitbit), HRV, resting heart rate, heart rate asleep and in deep sleep,
+breathing rate per stage, movements/h, posture changes, SpO2, CVHR, battery, room climate, steps the day before.
+For A/B comparisons (e.g. mouth tape) put a `notes.txt` into the session folder:
 ```
-pflaster=ja
-notiz=Toilette 04:00
+mouth_tape=yes
+note=toilet 04:00
 ```
 
-## 5. Audio-Referenz vom Handy (optional, aber der größte Hebel)
-Ohne Referenz lassen sich die Schwellen nicht seriös einstellen. Die Handy-Aufnahme liefert sie.
+## 5. Audio reference from the phone (optional, but the biggest lever)
+Without a reference the thresholds cannot be tuned seriously. The phone recording provides one.
 
-**Aufnahme:** Jede Sprachaufnahme-App, die stundenlang mit ausgeschaltetem Bildschirm aufnimmt
-(Pixel: „Rekorder“). Handy auf den Nachttisch, Mikro Richtung Kopf, ans Ladekabel.
-1. Uhr-App starten, dann Aufnahme starten.
-2. **Einmal kräftig mit der Uhrhand klatschen.** Knall im Audio + Spitze im Accelerometer
-   = Synchronisation auf ~0,1 s.
-3. Morgens beides stoppen, Audiodatei neben den Session-Ordner legen.
+**Recording:** any voice recorder app that records for hours with the screen off
+(Pixel: "Recorder"). Phone on the bedside table, microphone towards your head, plugged in.
+1. Start the watch app, then start the recording.
+2. **Clap once firmly with the watch hand.** Bang in the audio + spike in the accelerometer
+   = synchronisation to ~0.1 s.
+3. In the morning stop both and put the audio file next to the session folder.
 
-**Auswerten** (m4a/mp3 brauchen ffmpeg: `winget install Gyan.FFmpeg` oder `scoop install ffmpeg`):
+**Analysis** (m4a/mp3 need ffmpeg: `winget install Gyan.FFmpeg` or `scoop install ffmpeg`):
 ```
 python analysis/analyze.py sessions/20261030_230512
-python analysis/audio.py sessions/20261030_230512 "Aufnahme.m4a"
+python analysis/audio.py sessions/20261030_230512 "Recording.m4a"
 ```
-Startzeit kommt aus den Datei-Metadaten oder dem Dateinamen; notfalls `--start "2026-10-30 23:05:12"`.
+The start time comes from the file metadata or the file name; if needed `--start "2026-10-30 23:05:12"`.
 
-Ergebnis: `audio_summary.txt` plus CSVs:
-- `audio_events.csv` – Schnarcher, Atempausen-Kandidaten (10–120 s still direkt nach hörbarem
-  Atmen, mit „endet laut“ bei Japsen/Schnarcher), laute Ereignisse
-- `audio_breathing.csv` – Atemfrequenz aus dem Atemgeräusch
-- `breathing_vs_audio.csv` – Uhr gegen Audio. Die Zusammenfassung zeigt den Fehler pro
-  Qualitätsstufe der Uhr: Setz `BREATH_MIN_QUALITY` dort, wo der Fehler klein wird.
-- Anteil der Pulsspitzen, die kurz nach einer hörbaren Pause kommen, mit Zufallsniveau zum Vergleich.
+Result: `audio_summary.txt` plus CSVs:
+- `audio_events.csv` – snores, breathing pause candidates (10–120 s of silence right after audible
+  breathing, with "ends loud" for gasps/snores), loud events
+- `audio_breathing.csv` – breathing rate from the breathing sound
+- `breathing_vs_audio.csv` – watch against audio. The summary shows the error per
+  watch quality level: set `BREATH_MIN_QUALITY` where the error becomes small.
+- the share of heart-rate spikes that come shortly after an audible pause, with the chance level for comparison.
 
-Wer nicht allein schläft, nimmt die andere Person mit auf. Vorher absprechen.
+If you don't sleep alone, the other person is recorded too. Agree on it beforehand.
 
-### Testen ohne Uhr
+### Testing without a watch
 ```
-python analysis/simulate.py testnacht --audio
-python analysis/analyze.py testnacht --plot
-python analysis/audio.py testnacht "testnacht/Aufnahme 2025-10-30 19.46.27.wav"
+python analysis/simulate.py testnight --audio
+python analysis/analyze.py testnight --plot
+python analysis/audio.py testnight "testnight/Recording 2025-10-30 19.46.27.wav"
 ```
-Erzeugt 3 h mit Atmung 15→12/min, drei Bewegungen, Klatschen, Schnarchphase, 20 apnoe-artigen
-Zyklen und einer passenden Handy-Aufnahme (~170 MB WAV).
+Generates 3 h with breathing 15→12/min, three movements, a clap, a snoring phase, 20 apnea-like
+cycles and a matching phone recording (~170 MB WAV).
 
-## 6. PPG-Rohdaten testen (experimentell)
-`adb shell dumpsys sensorservice` zeigt auf der Pixel Watch 1 undokumentierte Google-Sensoren:
-`com.google.wear.sensor.ppg` (PPG Sensor, TI), `com.google.sensor.heart_rate_extended` und
-`com.google.sensor.ppg_controller`. Der Knopf **Start + PPG** schreibt sie zusätzlich roh mit
-(`raw_ppg.csv`, `raw_hr_ext.csv`, `raw_ppg_ctrl.csv`, Format `epoch_ms,accuracy,n,values` mit
-leerzeichengetrennten Werten) und legt `sensors.txt` mit allen Sensoren an.
+## 6. Testing raw PPG data (experimental)
+`adb shell dumpsys sensorservice` shows undocumented Google sensors on the Pixel Watch 1:
+`com.google.wear.sensor.ppg` (PPG sensor, TI), `com.google.sensor.heart_rate_extended` and
+`com.google.sensor.ppg_controller`. The **Start + PPG** button additionally records them raw
+(`raw_ppg.csv`, `raw_hr_ext.csv`, `raw_ppg_ctrl.csv`, format `epoch_ms,accuracy,n,values` with
+space-separated values) and writes `sensors.txt` listing all sensors.
 
-Erst kurz testen, nicht über Nacht (Datenmenge und Akku unbekannt): Uhr fest anlegen, **Start + PPG**,
-1–2 Minuten ruhig sitzen, Stopp, exportieren wie in Abschnitt 3, dann
+Test briefly first, not overnight (data volume and battery unknown): wear the watch snugly, **Start + PPG**,
+sit still for 1–2 minutes, Stop, export as in section 3, then
 ```
 python ppg_probe.py ..\sessions\<session> --plot
 ```
-Das Skript zeigt Abtastrate, Werte pro Event, Statistik pro Kanal, ob ein Kanal eine Pulswelle
-enthält (Peak im Pulsband vs. HeartRate-Sensor) und ob Werte wie Schlagintervalle in ms aussehen.
+The script shows the sample rate, values per event, statistics per channel, whether a channel contains a
+pulse wave (peak in the pulse band vs. heart-rate sensor) and whether values look like beat intervals in ms.
 
-**Ergebnis des ersten Tests (03.11.2026):** `raw_ppg.csv` liefert 100 Hz mit 16 Werten pro Event, davon
-7 belegt. v6 zeigt die Pulswelle am saubersten (v1, v3, v4 ebenfalls Licht-Kanäle, v0 vermutlich
-Umgebungslicht, v2/v5 Status mit Sentinel-Werten −59000/−23000). `raw_hr_ext.csv` enthält nur bpm und einen
-Statuswert, keine Schlagintervalle. Nullen am Ende werden inzwischen nicht mehr geschrieben (~40 → ~20 MB/h).
+**Result of the first test (2026-11-03):** `raw_ppg.csv` delivers 100 Hz with 16 values per event, of which
+7 are used. v6 shows the pulse wave most cleanly (v1, v3, v4 are also light channels, v0 is probably
+ambient light, v2/v5 are status with sentinel values −59000/−23000). `raw_hr_ext.csv` only contains bpm and a
+status value, no beat intervals. Trailing zeros are no longer written (~40 → ~20 MB/h).
 
-Schlag-zu-Schlag-Auswertung:
+Beat-to-beat analysis:
 ```
 python ppg.py ..\sessions\<session> --plot
 ```
-Wählt den Kanal mit der deutlichsten Pulswelle, erkennt jeden Schlag, verwirft Abschnitte mit Bewegung
-und Schläge mit untypischer Form, berechnet SDNN/RMSSD aus sauberen Intervallen und listet
-Extrasystolen-Kandidaten: „vorzeitig“ (kurzes Intervall + Pause, zusammen ≈ 2 Intervalle) und
-„Puls fehlt“ (ein Intervall ≈ doppelt so lang). Ausgabe: `ppg_summary.txt`, `ppg_beats.csv`,
-`ppg_events.csv`, `ppg.png` mit Ausschnitt pro Kandidat. Ohne zeitgleiches EKG sind das Kandidaten,
-keine Befunde.
+Picks the channel with the clearest pulse wave, detects every beat, discards sections with movement
+and beats with an atypical shape, computes SDNN/RMSSD from clean intervals and lists
+ectopic beat candidates: "premature" (short interval + pause, together ≈ 2 intervals) and
+"missed pulse" (one interval ≈ twice as long). Output: `ppg_summary.txt`, `ppg_beats.csv`,
+`ppg_events.csv`, `ppg.png` with a snippet per candidate. Without a simultaneous ECG these are candidates,
+not findings.
 
-**Gespürte Extrasystolen als Referenz:** Während einer Aufnahme erscheint der Knopf **Gespürt**. Jedes
-Mal, wenn du ein Stolpern spürst, sofort mit der anderen Hand antippen (der Arm mit der Uhr bleibt
-liegen). Das schreibt `felt` mit Zeitstempel in `events.csv`. Im PPG-Modus bleibt der Bildschirm die
-ersten 20 min an. `ppg.py` prüft dann pro Marke die 8 s davor auf das Muster (vorzeitig / Puls fehlt),
-nennt die Zufallstreffer-Wahrscheinlichkeit und zählt automatische Kandidaten ohne Marke (`ppg_felt.csv`).
+**Felt ectopic beats as a reference:** during a recording the **Felt** button appears. Every
+time you feel a skipped beat, tap it immediately with the other hand (the arm with the watch stays
+still). This writes `felt` with a timestamp to `events.csv`. In PPG mode the screen stays on for the
+first 20 min. `ppg.py` then checks the 8 s before each marker for the pattern (premature / missed pulse),
+reports the chance of a random hit and counts automatic candidates without a marker (`ppg_felt.csv`).
 
-## 7. Atempausen-Test (willkürliches Luftanhalten)
-Prüft, ob die Uhr eine Atempause überhaupt sieht. Ablauf (~9 min, am besten mit **Start + PPG**):
-1. Auf dem Rücken liegen, Uhrarm locker neben dem Körper, starten, 2 min ruhig atmen.
-2. Handgelenk 2 s kräftig schütteln und gleichzeitig eine Stoppuhr starten (Zeitmarke).
-3. Ab 0:30 fünfmal: 20 s Luft anhalten (nach normalem Ausatmen), 40 s normal atmen.
-4. Bei ~5:30 nochmal schütteln, Stopp.
+## 7. Breath-hold test (voluntary breath holding)
+Checks whether the watch sees a breathing pause at all. Procedure (~9 min, preferably with **Start + PPG**):
+1. Lie on your back, watch arm relaxed next to your body, start, breathe calmly for 2 min.
+2. Shake the wrist firmly for 2 s and start a stopwatch at the same time (time marker).
+3. From 0:30, five times: hold your breath for 20 s (after a normal exhale), breathe normally for 40 s.
+4. At ~5:30 shake again, Stop.
 ```
 python breath_hold.py ..\sessions\<session> --plot
 ```
-Findet die Zeitmarke automatisch (sonst `--marker HH:MM:SS`), filtert die Atembewegung (0,1–0,7 Hz,
-Gyro und Accelerometer getrennt), berechnet die Amplitude über 5 s und markiert Pausen, in denen sie
-unter 35 % des normalen Atmens fällt (≥ 8 s). Ausgabe: erkannte Pausen von 5, Fehlalarme, Zeitversatz,
-Puls vor/während/nach den Pausen und, falls PPG-Rohdaten vorhanden, dasselbe für die Atemmodulation
-der Pulswelle. Andere Abläufe: `--first-s`, `--hold-s`, `--cycle-s`, `--holds`.
+Finds the time marker automatically (otherwise `--marker HH:MM:SS`), filters the breathing motion (0.1–0.7 Hz,
+gyro and accelerometer separately), computes the amplitude over 5 s and marks pauses in which it
+drops below 35 % of normal breathing (≥ 8 s). Output: detected pauses out of 5, false alarms, time offset,
+heart rate before/during/after the pauses and, if raw PPG is present, the same for the breathing modulation
+of the pulse wave. Other procedures: `--first-s`, `--hold-s`, `--cycle-s`, `--holds`.
 
-Grenze: Luftanhalten heißt, der Brustkorb steht still (wie bei einer zentralen Pause). Bei einer
-obstruktiven Apnoe arbeitet der Brustkorb weiter gegen die verschlossenen Atemwege. Besteht die Uhr
-den Test nicht, erkennt sie auch keine echten Apnoen. Besteht sie ihn, ist das nur ein erster Schritt.
+Limit: holding your breath means the chest stands still (like a central pause). In an
+obstructive apnea the chest keeps working against the closed airway. If the watch fails
+the test, it won't detect real apneas either. If it passes, that is only a first step.
 
-## 8. Live-Dashboard
-Die Uhr schickt ihre Messwerte live über den ADB-Tunnel an den Laptop (kein Bluetooth, keine
-Firewall-Freigabe nötig, Verzögerung < 1 s). Die Aufzeichnung auf der Uhr läuft unabhängig davon weiter.
+## 8. Live dashboard
+The watch streams its measurements live to the laptop over the ADB tunnel (no Bluetooth, no
+firewall rule needed, latency < 1 s). Recording on the watch continues independently.
 ```
-python live.py --serial 192.168.178.35:<Port>     # richtet adb reverse ein, öffnet den Browser
-python live.py --demo                              # ohne Uhr, synthetische Daten
-python live.py --replay ..\sessions\<session>      # gespeicherte Session abspielen (--speed 4)
+python live.py --serial 192.168.178.35:<port>     # sets up adb reverse, opens the browser
+python live.py --demo                              # without a watch, synthetic data
+python live.py --replay ..\sessions\<session>      # play back a saved session (--speed 4)
 ```
-Auf der Uhr **Start + PPG** (ohne PPG fehlt die Pulswelle). Nach spätestens 3 s steht auf der Uhr
-„Live ✓“ (und „PPG …k“, falls mit PPG gestartet). Angezeigt: Pulswelle mit erkannten Schlägen, Schlagintervalle der letzten
-5 min (rot = Extrasystolen-Kandidat, grau = Bewegung, grün = Gespürt, lila = Pulssensor),
-Atembewegung, Bewegung, Puls, RMSSD (60 s), Atemzüge/min. Die Live-Erkennung ist einfacher als
-`ppg.py` und meldet mehr Fehlalarme. Maßgeblich ist die Auswertung hinterher.
+On the watch use **Start + PPG** (without PPG there is no pulse wave). Within 3 s the watch shows
+"Live ✓" (and "PPG …k" if started with PPG). Shown: pulse wave with detected beats, beat intervals of the last
+5 min (red = ectopic beat candidate, grey = movement, green = felt, purple = heart-rate sensor),
+breathing motion, movement, heart rate, RMSSD (60 s), breaths/min. The live detection is simpler than
+`ppg.py` and reports more false alarms. The analysis afterwards is what counts.
 
-Der PPG-Kanal wird automatisch gewählt (der mit der deutlichsten Pulsperiode, `--channel 6` legt ihn fest).
-Unter der Pulswelle steht eine Diagnosezeile: Kanal und Güte je Kanal, Pufferlänge, Verzögerung von
-PPG und Accel gegenüber der Laptop-Uhr, Ausschlag der gefilterten Welle, Fehler und die zuletzt
-empfangene PPG-Zeile. Alles Empfangene schreibt `live.py` nach `sessions/live/live_<Zeit>.txt`.
-Diese Datei hilft bei der Fehlersuche.
+The PPG channel is chosen automatically (the one with the clearest pulse period; `--channel 6` fixes it).
+Below the pulse wave is a diagnostics line: channel and quality per channel, buffer length, lag of
+PPG and accel relative to the laptop clock, range of the filtered wave, errors and the last
+received PPG line. `live.py` records everything it receives to `sessions/live/live_<time>.txt`.
+This file helps with debugging.
 
-Kostet Akku (WLAN bleibt aktiv), also nicht über Nacht. Geht der Uhr-Bildschirm aus, kann das WLAN
-schlafen. Dann bricht die Live-Verbindung ab, die Aufzeichnung läuft aber weiter.
+Costs battery (Wi-Fi stays on), so not overnight. When the watch screen turns off, Wi-Fi may
+sleep. Then the live connection drops, but recording continues.
 
-## 9. TypeScript-Variante (`analysis-ts/`)
-Parallel zu den Python-Skripten, gleiche Regeln, gleiche Ausgabedateien. Braucht nur Node ≥ 20.
+## 9. TypeScript version (`analysis-ts/`)
+Parallel to the Python scripts, same rules, same output files. Only needs Node ≥ 20.
 ```
 cd analysis-ts
 npm install
-npm run analyze -- ..\sessions\<session>       # wie analyze.py (ohne Plot)
-npm run ppg -- ..\sessions\<session>           # wie ppg.py (ohne Plot)
-npm run live -- --serial 192.168.178.35:<Port>  # wie live.py, Titel "SleepLogger live · TS"
+npm run analyze -- ..\sessions\<session>       # like analyze.py (without plot)
+npm run ppg -- ..\sessions\<session>           # like ppg.py (without plot)
+npm run live -- --serial 192.168.178.35:<port>  # like live.py, title "SleepLogger live · TS"
 npm run live -- --demo
-npm run ui -- --demo                           # Live-Analyzer mit React-Oberfläche, gleiche Optionen wie live
-npm test                                       # DSP gegen scipy-Referenzwerte
+npm run ui -- --demo                           # live analyzer with a React UI, same options as live
+npm test                                       # DSP against scipy reference values
 ```
-Geprüft gegen Python: `summary.txt` auf drei Nächten zeichengleich, `ppg_summary.txt` auf Testsession
-und PPG-Nacht gleich (Kandidaten, HRV). Einziger bekannter Unterschied: In flachen Signalstrecken
-(PPG-LED aus) findet Python ein paar hundert Schein-Schläge mit Amplitude ~1e-9 (Rechenrauschen),
-TypeScript weniger. Das ändert nur die Schlagzahl, nichts an HRV oder Kandidaten.
-Noch nicht portiert: Plots (`--plot`), `audio.py`, `breath_hold.py`, `nights.py`, `ppg_probe.py`, `simulate.py`.
+Checked against Python: `summary.txt` character-identical on three nights, `ppg_summary.txt` identical on the
+test session and a PPG night (candidates, HRV). The only known difference: in flat signal stretches
+(PPG LED off) Python finds a few hundred spurious beats with amplitude ~1e-9 (numerical noise),
+TypeScript fewer. That only changes the beat count, nothing about HRV or candidates.
+Not ported yet: plots (`--plot`), `audio.py`, `breath_hold.py`, `nights.py`, `ppg_probe.py`, `simulate.py`.
 
-## Grenzen (ehrlich)
-- **Atemfrequenz** wird nur in ruhigen Phasen geschätzt und hat einen Qualitätswert. Am Handgelenk
-  ist das Signal sehr klein; erwarte viele unbrauchbare Fenster. Die Parameter sind nur an
-  synthetischen Daten geprüft. Für echtes Tuning braucht es eine Referenz (Audioaufnahme der
-  Atmung oder Brustgurt). Eine Testnacht mit der Uhr am Brustkorb zeigt, was das Signal hergibt.
-- **Audio-Pausen** sind Kandidaten: Leises Atmen ist oft unhörbar. Darum zählen nur Stillen direkt
-  nach hörbarem Atmen, und Stillen über 120 s gelten als „zu leise“, nicht als Pause.
-- **CVHR** ersetzt keine Polysomnographie. Die Uhr glättet ihre BPM, Betablocker dämpfen die
-  Pulsreaktion, und auch Schnarchen ohne Apnoe oder normale Weckreaktionen erzeugen Spitzen.
-- Offiziell liefert Wear OS nur BPM. Die Pixel Watch meldet aber zusätzlich einen rohen „PPG Sensor“
-  und „HeartRate-Extended“ (nur `BODY_SENSORS` nötig). Ob die Daten an Dritt-Apps gehen und was drinsteht,
-  klärt der PPG-Test (Abschnitt 6). Bis dahin: keine HRV, keine Extrasystolen.
-- Akku: Puls dauerhaft + Wakelock kostet spürbar. `events.csv` zeigt, ob ein Wake-up-Accelerometer
-  verfügbar war.
+## Limits (honestly)
+- **Breathing rate** is only estimated in quiet phases and comes with a quality value. At the wrist
+  the signal is very small; expect many unusable windows. The parameters have only been checked on
+  synthetic data. Real tuning needs a reference (audio recording of the
+  breathing or a chest strap). A test night with the watch on the chest shows what the signal can deliver.
+- **Audio pauses** are candidates: quiet breathing is often inaudible. That's why only silences right
+  after audible breathing count, and silences over 120 s count as "too quiet", not as a pause.
+- **CVHR** does not replace polysomnography. The watch smooths its BPM, beta blockers dampen the
+  heart-rate response, and snoring without apnea or normal arousals also produce spikes.
+- Officially Wear OS only delivers BPM. The Pixel Watch, however, also reports a raw "PPG Sensor"
+  and "HeartRate-Extended" (only `BODY_SENSORS` needed). Whether the data reaches third-party apps and what it contains
+  is answered by the PPG test (section 6). Until then: no HRV, no ectopic beats.
+- Battery: continuous heart rate + wakelock costs noticeably. `events.csv` shows whether a wake-up accelerometer
+  was available.

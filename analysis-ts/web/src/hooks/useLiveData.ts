@@ -7,7 +7,7 @@ export interface HistoryPoint { t: number; hr_ppg: number | null; hr_sensor: num
 
 const HISTORY_S = 300;
 
-/** Snapshots per Server-Sent Events; dazu eine Sekunden-Historie der Kennzahlen für die Sparklines. */
+/** Snapshots via server-sent events, plus a per-second history of the key figures for the sparklines. */
 export function useLiveData(paused: boolean) {
   const [data, setData] = useState<LiveData | null>(null);
   const [online, setOnline] = useState(false);

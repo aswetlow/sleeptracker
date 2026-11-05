@@ -1,10 +1,10 @@
-/** Dateien lesen/schreiben, Zeitzonen, Zahlformat wie Python. */
+/** Reading/writing files, time zones, number formatting like Python. */
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 export const TZ = "Europe/Berlin";
 
-/** Numerische CSV-Spalten (Kopfzeile, Komma-getrennt) als Float64Arrays. Nicht-Zahlen werden NaN. */
+/** Numeric CSV columns (header row, comma-separated) as Float64Arrays. Non-numbers become NaN. */
 export function readNumericCsv(path: string, cols?: string[]): Record<string, Float64Array> {
   const buf = readFileSync(path);
   let nl = buf.indexOf(10);
@@ -49,7 +49,7 @@ export function readEvents(session: string): { t: number; event: string }[] {
   });
 }
 
-/** Datensätze nach einem Zeitfeld sortieren (stabil), alle Spalten mit. */
+/** Sort records by a time field (stable), carrying all columns along. */
 export function sortBy(cols: Record<string, Float64Array>, key: string): Record<string, Float64Array> {
   const t = cols[key];
   let sorted = true;
@@ -76,7 +76,7 @@ function parts(ms: number) {
   return o;
 }
 
-/** Versatz Berlin gegen UTC in Minuten für einen Zeitpunkt. */
+/** Offset of Berlin against UTC in minutes for a point in time. */
 export function tzOffsetMin(ms: number): number {
   const o = parts(ms);
   const asUtc = Date.UTC(+o.year, +o.month - 1, +o.day, +o.hour, +o.minute, +o.second);
@@ -86,7 +86,7 @@ export function tzOffsetMin(ms: number): number {
 export const hms = (ms: number) => { const o = parts(ms); return `${o.hour}:${o.minute}:${o.second}`; };
 export const hm = (ms: number) => { const o = parts(ms); return `${o.hour}:${o.minute}`; };
 
-/** "2026-11-03 23:06:00+01:00" wie pandas beim CSV-Export. */
+/** "2026-11-03 23:06:00+01:00" like pandas in CSV export. */
 export function isoLocal(ms: number): string {
   const o = parts(ms);
   const off = tzOffsetMin(ms);
@@ -95,7 +95,7 @@ export function isoLocal(ms: number): string {
   return `${o.year}-${o.month}-${o.day} ${o.hour}:${o.minute}:${o.second}${s}${String(Math.floor(a / 60)).padStart(2, "0")}:${String(a % 60).padStart(2, "0")}`;
 }
 
-/** Lokale Berliner Zeit ohne Versatz ("2026-11-04T01:02:00.000") -> epoch ms. */
+/** Local Berlin time without offset ("2026-11-04T01:02:00.000") -> epoch ms. */
 export function berlinToEpoch(local: string): number {
   const m = local.match(/^(\d{4})-(\d\d)-(\d\d)[T ](\d\d):(\d\d)(?::(\d\d)(?:\.(\d+))?)?/);
   if (!m) return NaN;
@@ -105,7 +105,7 @@ export function berlinToEpoch(local: string): number {
   return t;
 }
 
-/** Zahl wie Python repr (kürzeste Darstellung, NaN leer wie pandas). */
+/** Number like Python repr (shortest representation, NaN empty like pandas). */
 export function num(v: number | null | undefined): string {
   if (v === null || v === undefined || Number.isNaN(v)) return "";
   if (Number.isInteger(v) && Math.abs(v) < 1e16) return v.toFixed(1).replace(/\.0$/, ".0");
@@ -113,13 +113,13 @@ export function num(v: number | null | undefined): string {
 }
 
 /**
- * Python-artiges f"{v:.{d}f}" (NaN -> "nan"): rundet den exakten Binärwert, bei genau .5 zur geraden
- * Ziffer (2.25 -> "2.2", 0.5 -> "0"). JS toFixed würde hier aufrunden.
+ * Python-style f"{v:.{d}f}" (NaN -> "nan"): rounds the exact binary value, exact .5 to the even
+ * digit (2.25 -> "2.2", 0.5 -> "0"). JS toFixed would round up here.
  */
 export function f(v: number, d = 0): string {
   if (Number.isNaN(v)) return "nan";
   if (!Number.isFinite(v) || Math.abs(v) >= 1e21) return String(v);
-  const exact = Math.abs(v).toFixed(Math.min(100, d + 60));   // exakte Dezimaldarstellung des Doubles
+  const exact = Math.abs(v).toFixed(Math.min(100, d + 60));   // exact decimal representation of the double
   const [ip, fp] = exact.split(".");
   const keep = fp.slice(0, d), rest = fp.slice(d);
   let digits = ip + keep;
@@ -133,7 +133,7 @@ export function f(v: number, d = 0): string {
   }
   const intPart = digits.slice(0, digits.length - d) || "0";
   const out = d ? `${intPart}.${digits.slice(digits.length - d)}` : intPart;
-  return v < 0 || Object.is(v, -0) ? "-" + out : out;   // Python schreibt auch "-0"
+  return v < 0 || Object.is(v, -0) ? "-" + out : out;   // Python also writes "-0"
 }
 
 export function writeCsv(path: string, header: string[], rows: (string | number | boolean | null | undefined)[][]) {

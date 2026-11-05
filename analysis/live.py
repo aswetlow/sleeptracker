@@ -1,18 +1,18 @@
 """
-Live-Dashboard: Uhr -> ADB-Tunnel -> Laptop -> Browser.
+Live dashboard: watch -> ADB tunnel -> laptop -> browser.
 
-1. Auf der Uhr die App starten (am besten "Start + PPG", sonst fehlt die Pulswelle).
-2. Auf dem Laptop:
+1. Start the app on the watch (preferably "Start + PPG", otherwise there is no pulse wave).
+2. On the laptop:
        python live.py --serial 192.168.178.35:41773
-   Das Skript richtet `adb reverse tcp:9000 tcp:9000` ein, wartet auf die Uhr und öffnet
-   http://localhost:8765 im Browser. Die Uhr verbindet sich von selbst (spätestens nach 3 s).
-3. Ohne Uhr ausprobieren:  python live.py --demo
-   Gespeicherte Session abspielen:  python live.py --replay ..\\sessions\\<session> [--speed 4]
+   The script sets up `adb reverse tcp:9000 tcp:9000`, waits for the watch and opens
+   http://localhost:8765 in the browser. The watch connects on its own (within 3 s).
+3. Try it without a watch:  python live.py --demo
+   Play back a saved session:  python live.py --replay ..\\sessions\\<session> [--speed 4]
 
-Angezeigt: Pulswelle der letzten 10 s mit erkannten Schlägen, Schlagintervalle der letzten 5 min
-(Kandidaten für Extrasystolen rot, "Gespürt" grün), Atembewegung der letzten 60 s, Bewegung,
-und als Zahlen Puls (PPG und Sensor), RMSSD der letzten 60 s, Atemzüge/min.
-Die Aufzeichnung auf der Uhr läuft unabhängig davon weiter.
+Shown: pulse wave of the last 10 s with detected beats, beat intervals of the last 5 min
+(ectopic beat candidates red, "felt" green), breathing motion of the last 60 s, movement,
+and as numbers heart rate (PPG and sensor), RMSSD of the last 60 s, breaths/min.
+Recording on the watch continues independently.
 """
 import argparse
 import json
@@ -41,21 +41,21 @@ IBI_KEEP_S = 300
 class State:
     def __init__(self, ppg_channel, record=None):
         self.lock = threading.Lock()
-        self.fixed_ch = ppg_channel             # None = automatisch den Kanal mit dem klarsten Puls nehmen
+        self.fixed_ch = ppg_channel             # None = automatically pick the channel with the clearest pulse
         self.ch = ppg_channel if ppg_channel is not None else 6
         self.ch_quality = {}
         self.ch_checked = 0.0
         self.ppg_t = deque(maxlen=int(PPG_KEEP_S * PPG_FS))
-        self.ppg_y = deque(maxlen=int(PPG_KEEP_S * PPG_FS))   # alle Kanäle v0…v6 (fehlend = NaN)
+        self.ppg_y = deque(maxlen=int(PPG_KEEP_S * PPG_FS))   # all channels v0…v6 (missing = NaN)
         self.last_p = ""
         self.error = ""
-        self.rec = record                       # Datei, in die jede empfangene Zeile geschrieben wird
+        self.rec = record                       # file every received line is written to
         self.sos_ppg = signal.butter(3, (0.6, 3.5), btype="band", fs=PPG_FS, output="sos")
-        self.ppg_f = ([], [])                   # gefilterte Pulswelle für die Anzeige
+        self.ppg_f = ([], [])                   # filtered pulse wave for display
         self.acc = deque(maxlen=int(IMU_KEEP_S * IMU_FS))
         self.gyro = deque(maxlen=int(IMU_KEEP_S * IMU_FS))
         self.hr = deque(maxlen=IBI_KEEP_S)
-        self.beats = deque(maxlen=600)          # Zeitpunkte erkannter Schläge (ms)
+        self.beats = deque(maxlen=600)          # times of detected beats (ms)
         self.ibis = deque(maxlen=600)           # (t_ms, ibi_ms, flag)
         self.felt = deque(maxlen=200)
         self.proms = deque(maxlen=15)
@@ -66,7 +66,7 @@ class State:
         self.breath = {"t": [], "y": [], "rate": None, "quality": 0.0}
         self.activity = {"t": [], "y": []}
 
-    # ---- Eingang (TCP-Thread) ----
+    # ---- input (TCP thread) ----
     def feed(self, line: str):
         parts = line.strip().split(",")
         if not parts or parts[0] == "k":
@@ -87,10 +87,10 @@ class State:
                     self.last_p = line.strip()[:160]
                     vals = [float(v) for v in parts[2].split()[:7]]
                     if len(vals) <= self.ch:
-                        self.counts["p_zu_kurz"] = self.counts.get("p_zu_kurz", 0) + 1
+                        self.counts["p_too_short"] = self.counts.get("p_too_short", 0) + 1
                     vals += [math.nan] * (7 - len(vals))
                     self.ppg_t.append(t)
-                    self.ppg_y.append(vals)         # roh; Kanalwahl und Filter in process()
+                    self.ppg_y.append(vals)         # raw; channel choice and filtering in process()
                 elif kind == "a":
                     self.acc.append((t, float(parts[2]), float(parts[3]), float(parts[4])))
                 elif kind == "g":
@@ -100,15 +100,15 @@ class State:
                 elif kind == "e" and parts[2].startswith("felt"):
                     self.felt.append(t)
         except (ValueError, IndexError) as e:
-            self.counts["kaputt"] = self.counts.get("kaputt", 0) + 1
-            self.error = f"Zeile nicht lesbar ({e}): {line.strip()[:80]}"
+            self.counts["malformed"] = self.counts.get("malformed", 0) + 1
+            self.error = f"unreadable line ({e}): {line.strip()[:80]}"
 
-    # ---- Verarbeitung (alle 200 ms) ----
+    # ---- processing (every 200 ms) ----
     def process(self):
         with self.lock:
             pt, raw = np.array(self.ppg_t), np.array(self.ppg_y, dtype=float).reshape(-1, 7)
             acc, gyro = np.array(self.acc), np.array(self.gyro)
-        if len(pt) > 1 and np.any(np.diff(pt) < 0):           # Batches können überlappen
+        if len(pt) > 1 and np.any(np.diff(pt) < 0):           # batches can overlap
             o = np.argsort(pt, kind="stable")
             pt, raw = pt[o], raw[o]
         if len(pt) > PPG_FS * 3:
@@ -118,8 +118,8 @@ class State:
             ok = np.isfinite(py)
             if ok.sum() > PPG_FS * 3:
                 pt, py = pt[ok], py[ok]
-                # Nullphasig filtern (vor/zurück): ein kausaler Filter verschiebt die Peaks je nach
-                # Grundlinienschwankung und macht die Intervalle um ±100 ms zappelig
+                # Zero-phase filtering (forward/backward): a causal filter shifts the peaks depending on
+                # baseline wander and makes the intervals jitter by ±100 ms
                 y = signal.sosfiltfilt(self.sos_ppg, py - py.mean())
                 with self.lock:
                     self.ppg_f = (pt.tolist(), y.tolist())
@@ -136,13 +136,13 @@ class State:
             self._breath(src, acc)
 
     def _pick_channel(self, raw):
-        """Kanal mit der deutlichsten Pulsperiode (Autokorrelation bei 0,33–1,5 s) über die letzten 8 s."""
+        """Channel with the clearest pulse period (autocorrelation at 0.33–1.5 s) over the last 8 s."""
         self.ch_checked = time.time()
         seg = raw[-int(8 * PPG_FS):]
         q = {}
         for c in range(7):
             x = seg[:, c]
-            # Status-/Sentinel-Kanäle (negative Codes, konstant) und Lücken überspringen
+            # skip status/sentinel channels (negative codes, constant) and gaps
             if not np.all(np.isfinite(x)) or np.any(x < 0) or x.std() < 1e-6:
                 continue
             f = signal.sosfiltfilt(self.sos_ppg, x - x.mean())
@@ -157,7 +157,7 @@ class State:
                     self.ch = best
 
     def _moving_times(self):
-        """Zeitpunkte mit Bewegung (Std von |a| über 1 s > 0,03 m/s²) aus dem Accelerometer-Puffer."""
+        """Times with movement (std of |a| over 1 s > 0.03 m/s²) from the accelerometer buffer."""
         with self.lock:
             acc = np.array(self.acc)
         if len(acc) < IMU_FS * 2:
@@ -168,26 +168,26 @@ class State:
         return acc[std > 0.03, 0]
 
     def _beats(self, pt, py):
-        # Schläge im sicheren Teil (älter als 1 s) suchen; Prominenz relativ zur Amplitude
+        # look for beats in the settled part (older than 1 s); prominence relative to amplitude
         recent = pt > pt[-1] - 2500
         amp = np.median(np.abs(py[recent])) + 1e-9
         pk, prop = signal.find_peaks(py, distance=int(0.33 * PPG_FS), prominence=0.8 * amp)
-        pk = pk[pt[pk] > pt[0] + 1000]          # linker Rand: Filter-Einschwingen
+        pk = pk[pt[pk] > pt[0] + 1000]          # left edge: filter settling
         mov = self._moving_times()
         with self.lock:
             last = self.beats[-1] if self.beats else -1
-            # Gegen Doppelzählung (dikrote Welle): Mindestabstand 45 % des typischen Intervalls.
-            # Nicht mehr, sonst fallen echte frühe Extraschläge (oft 50–70 %) durch.
+            # Against double counting (dicrotic wave): minimum spacing 45 % of the typical interval.
+            # No more, otherwise real early extra beats (often 50–70 %) are lost.
             med_ibi = float(np.median([i for _, i, _f in list(self.ibis)[-15:]])) if len(self.ibis) >= 5 else 600
             refr = max(330.0, 0.45 * med_ibi)
             prom = signal.peak_prominences(py, pk)[0] if len(pk) else []
             prom_ref = float(np.median(self.proms)) if len(self.proms) >= 5 else 0.0
             for n, p in enumerate(pk):
                 tb = pt[p]
-                # erst nach 1 s entscheiden: am rechten Rand ist die Prominenz noch unvollständig
+                # decide only after 1 s: at the right edge the prominence is still incomplete
                 if tb <= last + refr or tb > pt[-1] - 1000:
                     continue
-                # Folgt kurz danach (< 60 % Intervall) ein kräftigerer Peak, ist dieser hier Nebenwelle/Rauschen
+                # if a stronger peak follows shortly after (< 60 % interval), this one is a side wave/noise
                 if n + 1 < len(pk) and pt[pk[n + 1]] - tb < 0.6 * med_ibi and prom[n + 1] > prom[n]:
                     continue
                 if prom[n] < 0.25 * prom_ref:
@@ -195,20 +195,20 @@ class State:
                 if self.beats:
                     ibi = tb - self.beats[-1]
                     if 300 <= ibi <= 2500:
-                        # Median über alle letzten 15 Intervalle (robust, kann sich nicht "festfahren")
-                        ref = [i for _, i, _f in list(self.ibis)[-15:] if _f != "bewegt"] or [ibi]
+                        # median over the last 15 intervals (robust, cannot get "stuck")
+                        ref = [i for _, i, _f in list(self.ibis)[-15:] if _f != "moving"] or [ibi]
                         med = float(np.median(ref))
                         flag = ""
                         if len(mov) and np.min(np.abs(mov - tb)) < 3000:
-                            flag = "bewegt"
+                            flag = "moving"
                         elif ibi < 0.8 * med:
-                            flag = "kurz"
+                            flag = "short"
                         elif 1.75 * med <= ibi <= 2.3 * med:
-                            flag = "Puls fehlt"
-                        elif ibi > 1.15 * med and self.ibis and self.ibis[-1][2] == "kurz":
-                            flag = "Pause"
+                            flag = "missed pulse"
+                        elif ibi > 1.15 * med and self.ibis and self.ibis[-1][2] == "short":
+                            flag = "pause"
                         self.ibis.append((tb, ibi, flag))
-                        if flag != "bewegt":
+                        if flag != "moving":
                             self.proms.append(prom[n])
                 self.beats.append(tb)
                 last = tb
@@ -217,7 +217,7 @@ class State:
         t = src[:, 0]
         sel = t > t[-1] - 60_000
         x = src[sel, 1:] - np.median(src[sel, 1:], axis=0)
-        # Bewegungsabschnitte (±3 s) neutralisieren, sonst gewinnt die Bewegung die Hauptkomponente
+        # neutralise movement sections (±3 s), otherwise movement wins the principal component
         if len(acc) > IMU_FS * 5:
             mag = np.linalg.norm(acc[:, 1:], axis=1)
             act = np.abs(np.diff(mag, prepend=mag[0]))
@@ -247,7 +247,7 @@ class State:
             self.breath = {"t": t[sel][::5].tolist(), "y": pc[::5].round(6).tolist(),
                            "rate": rate, "quality": q}
 
-    # ---- Ausgabe ----
+    # ---- output ----
     def snapshot(self):
         with self.lock:
             now = self.ppg_t[-1] if self.ppg_t else (self.acc[-1][0] if self.acc else 0)
@@ -277,7 +277,7 @@ class State:
                 "connected": time.time() - self.last_rx < 3,
                 "lines": self.lines,
                 "counts": dict(self.counts),
-                "ppg": {"t": pt[::k], "y": [round(v, 1) for v in py[::k]]},  # bis 1 s alt, s. u.
+                "ppg": {"t": pt[::k], "y": [round(v, 1) for v in py[::k]]},  # up to 1 s old, see below
                 "beats": [b for b in self.beats if pt and b >= pt[0]],
                 "ibis": ibis,
                 "felt": list(self.felt),
@@ -290,7 +290,7 @@ class State:
                     "rmssd": round(float(np.sqrt(np.mean(d ** 2))), 1) if len(d) > 5 else None,
                     "breath": round(self.breath["rate"], 1) if self.breath["rate"] else None,
                     "breath_q": round(self.breath["quality"], 2),
-                    "candidates_5min": sum(1 for x in ibis if x[2] and x[2] != "bewegt"),
+                    "candidates_5min": sum(1 for x in ibis if x[2] and x[2] != "moving"),
                     "felt_5min": sum(1 for f in self.felt if f > now - IBI_KEEP_S * 1000),
                 },
             }
@@ -299,19 +299,19 @@ class State:
 def tcp_server(state, port):
     class Handler(socketserver.StreamRequestHandler):
         def handle(self):
-            print(f"Uhr verbunden ({self.client_address[0]})")
+            print(f"watch connected ({self.client_address[0]})")
             for raw in self.rfile:
                 state.feed(raw.decode("utf-8", "ignore"))
-            print("Uhr getrennt")
+            print("watch disconnected")
 
     socketserver.ThreadingTCPServer.allow_reuse_address = True
-    socketserver.ThreadingTCPServer.daemon_threads = True      # sonst hängt Strg+C an der offenen Uhr-Verbindung
+    socketserver.ThreadingTCPServer.daemon_threads = True      # otherwise Ctrl+C hangs on the open watch connection
     srv = socketserver.ThreadingTCPServer(("127.0.0.1", port), Handler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
 
 
 def demo_feeder(state):
-    """Synthetische Uhr: Puls ~62 bpm mit gelegentlicher Extrasystole, Atmung 14/min, ab und zu Bewegung."""
+    """Synthetic watch: heart rate ~62 bpm with an occasional ectopic beat, breathing 14/min, occasional movement."""
     rng = np.random.default_rng(0)
     t0 = time.time() * 1000
     next_beat, beat_n, last_imu, last_ppg = 0.0, 0, 0.0, 0.0
@@ -322,7 +322,7 @@ def demo_feeder(state):
             beats.append(next_beat)
             beat_n += 1
             base = 970 + 40 * math.sin(2 * math.pi * next_beat / 4300)
-            if beat_n % 37 == 0:            # Extrasystole: früh, danach kompensatorische Pause
+            if beat_n % 37 == 0:            # ectopic beat: early, followed by a compensatory pause
                 beats.append(next_beat + 0.55 * base)
                 next_beat += 2 * base
                 if beat_n % 74 == 0:
@@ -354,7 +354,7 @@ def demo_feeder(state):
 
 
 def replay_feeder(state, session, speed):
-    """Gespeicherte Session so abspielen, als käme sie gerade von der Uhr."""
+    """Play back a saved session as if it were coming from the watch right now."""
     import pandas as pd
     from pathlib import Path
     s = Path(session)
@@ -385,7 +385,7 @@ def replay_feeder(state, session, speed):
             state.feed(lines[k])
         i = j
         time.sleep(0.05)
-    print("Replay zu Ende")
+    print("replay finished")
 
 
 def setup_adb(serial, port):
@@ -393,27 +393,27 @@ def setup_adb(serial, port):
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
     except FileNotFoundError:
-        print("adb nicht gefunden – im PATH? Sonst Tunnel von Hand: " + " ".join(cmd))
+        print("adb not found – is it on PATH? Otherwise set up the tunnel by hand: " + " ".join(cmd))
         return
     if r.returncode != 0 and "more than one" in (r.stderr + r.stdout) and not serial:
         devs = subprocess.run(["adb", "devices"], capture_output=True, text=True).stdout.splitlines()
         cands = [l.split()[0] for l in devs[1:] if l.strip().endswith("device")]
-        print("Mehrere Geräte: " + ", ".join(cands) + " – bitte mit --serial wählen.")
+        print("Several devices: " + ", ".join(cands) + " – please choose one with --serial.")
         return
-    print(("Tunnel steht: " if r.returncode == 0 else "Tunnel fehlgeschlagen: ") + " ".join(cmd)
+    print(("Tunnel ready: " if r.returncode == 0 else "Tunnel failed: ") + " ".join(cmd)
           + ("" if r.returncode == 0 else "\n" + r.stderr.strip()))
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--serial", help="adb-Gerät, z. B. 192.168.178.35:41773")
+    ap.add_argument("--serial", help="adb device, e.g. 192.168.178.35:41773")
     ap.add_argument("--port", type=int, default=9000)
     ap.add_argument("--http", type=int, default=8765)
     ap.add_argument("--channel", type=int, default=None,
-                    help="PPG-Kanal fest wählen (0–6); ohne Angabe automatisch (im Test war v6 am saubersten)")
-    ap.add_argument("--demo", action="store_true", help="ohne Uhr, mit synthetischen Daten")
-    ap.add_argument("--replay", help="gespeicherte Session abspielen statt live")
-    ap.add_argument("--speed", type=float, default=1.0, help="Abspielgeschwindigkeit für --replay")
+                    help="fix the PPG channel (0–6); automatic if omitted (v6 was cleanest in testing)")
+    ap.add_argument("--demo", action="store_true", help="without a watch, with synthetic data")
+    ap.add_argument("--replay", help="play back a saved session instead of live")
+    ap.add_argument("--speed", type=float, default=1.0, help="playback speed for --replay")
     ap.add_argument("--no-browser", action="store_true")
     args = ap.parse_args()
 
@@ -424,7 +424,7 @@ def main():
         d.mkdir(parents=True, exist_ok=True)
         rec_path = d / time.strftime("live_%Y%m%d_%H%M%S.txt")
         rec = open(rec_path, "w", buffering=1, encoding="utf-8")
-        print(f"Empfangene Daten werden mitgeschrieben: {rec_path}")
+        print(f"Recording received data to: {rec_path}")
     state = State(args.channel, rec)
     if args.demo:
         threading.Thread(target=demo_feeder, args=(state,), daemon=True).start()
@@ -438,9 +438,9 @@ def main():
         while True:
             try:
                 state.process()
-            except Exception as e:      # Live-Ansicht soll nie wegen eines Rechenfehlers stehen bleiben
+            except Exception as e:      # the live view must never stop because of a computation error
                 import traceback
-                msg = f"Verarbeitung: {type(e).__name__}: {e}"
+                msg = f"processing: {type(e).__name__}: {e}"
                 if msg != state.error:
                     print(msg)
                     traceback.print_exc()
@@ -465,25 +465,25 @@ def main():
             self.end_headers()
             self.wfile.write(body)
 
-    # Strg+C zuverlässig beenden, auch wenn gerade eine Uhr-Verbindung offen ist
-    _signal.signal(_signal.SIGINT, lambda *_: (print("\nbeendet"), os._exit(0)))
+    # exit reliably on Ctrl+C, even while a watch connection is open
+    _signal.signal(_signal.SIGINT, lambda *_: (print("\nstopped"), os._exit(0)))
     ThreadingHTTPServer.daemon_threads = True
     srv = ThreadingHTTPServer(("127.0.0.1", args.http), Http)
     url = f"http://localhost:{args.http}"
-    print(f"Dashboard: {url}  (Strg+C beendet)")
+    print(f"Dashboard: {url}  (Ctrl+C to stop)")
     if not args.no_browser:
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()
     try:
         srv.serve_forever(poll_interval=0.2)
     except KeyboardInterrupt:
-        print("beendet")
+        print("stopped")
     finally:
         srv.server_close()
-        os._exit(0)      # offene Sockets/Threads nicht auf Windows hängen lassen
+        os._exit(0)      # do not let open sockets/threads hang on Windows
 
 
 PAGE = r"""<!doctype html>
-<html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>SleepLogger live</title>
 <style>
 :root{--bg:#0f1115;--panel:#171a21;--ink:#e6e8ee;--muted:#8b93a7;--grid:#262b36;--line:#5aa9ff;--beat:#ffb454;--bad:#ff5c6c;--felt:#3ddc97;--alt:#c792ea}
@@ -498,18 +498,18 @@ header{display:flex;align-items:center;gap:12px;padding:12px 16px}h1{font-size:1
 .panel{background:var(--panel);border-radius:10px;margin:0 16px 10px;padding:8px 10px}
 .panel .l{color:var(--muted);font-size:12px;margin-bottom:4px}.diag{color:var(--muted);font:11px/1.4 ui-monospace,monospace;margin-top:4px;word-break:break-all}canvas{width:100%;display:block}
 </style></head><body>
-<header><div id="dot" class="dot"></div><h1>SleepLogger live</h1><span id="status">warte auf Uhr …</span></header>
+<header><div id="dot" class="dot"></div><h1>SleepLogger live</h1><span id="status">waiting for watch …</span></header>
 <div class="tiles">
- <div class="tile"><div class="v" id="hr_ppg">–</div><div class="l">Puls aus Pulswelle (bpm)</div></div>
- <div class="tile"><div class="v" id="hr_sensor">–</div><div class="l">Pulssensor der Uhr (bpm)</div></div>
- <div class="tile"><div class="v" id="rmssd">–</div><div class="l">RMSSD letzte 60 s (ms)</div></div>
- <div class="tile"><div class="v" id="breath">–</div><div class="l">Atemzüge/min (Qualität)</div></div>
- <div class="tile"><div class="v" id="cand">–</div><div class="l">Kandidaten / Gespürt (5 min)</div></div>
+ <div class="tile"><div class="v" id="hr_ppg">–</div><div class="l">Heart rate from pulse wave (bpm)</div></div>
+ <div class="tile"><div class="v" id="hr_sensor">–</div><div class="l">Watch heart-rate sensor (bpm)</div></div>
+ <div class="tile"><div class="v" id="rmssd">–</div><div class="l">RMSSD last 60 s (ms)</div></div>
+ <div class="tile"><div class="v" id="breath">–</div><div class="l">Breaths/min (quality)</div></div>
+ <div class="tile"><div class="v" id="cand">–</div><div class="l">Candidates / felt (5 min)</div></div>
 </div>
-<div class="panel"><div class="l">Pulswelle, letzte 10 s · Punkte = erkannte Schläge</div><canvas id="c_ppg" height="160"></canvas><div class="diag" id="diag"></div></div>
-<div class="panel"><div class="l">Schlagintervalle, letzte 5 min (ms) · rot = auffällig · grau = Bewegung · grün = Gespürt · lila = Pulssensor</div><canvas id="c_ibi" height="160"></canvas></div>
-<div class="panel"><div class="l">Atembewegung, letzte 60 s</div><canvas id="c_breath" height="110"></canvas></div>
-<div class="panel"><div class="l">Bewegung, letzte 60 s</div><canvas id="c_act" height="70"></canvas></div>
+<div class="panel"><div class="l">Pulse wave, last 10 s · dots = detected beats</div><canvas id="c_ppg" height="160"></canvas><div class="diag" id="diag"></div></div>
+<div class="panel"><div class="l">Beat intervals, last 5 min (ms) · red = abnormal · grey = movement · green = felt · purple = heart-rate sensor</div><canvas id="c_ibi" height="160"></canvas></div>
+<div class="panel"><div class="l">Breathing motion, last 60 s</div><canvas id="c_breath" height="110"></canvas></div>
+<div class="panel"><div class="l">Movement, last 60 s</div><canvas id="c_act" height="70"></canvas></div>
 <script>
 const css=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 function setup(c){const r=window.devicePixelRatio||1,w=c.clientWidth,h=c.height/(c._r||1);c._r=r;c.width=w*r;c.height=h*r;
@@ -529,22 +529,22 @@ function vlines(g,ts,color,t0){if(!g)return;g.x.strokeStyle=color;g.x.lineWidth=
 const fmt=(v,d=0)=>v==null?'–':Number(v).toFixed(d);
 async function tick(){try{const d=await (await fetch('/data')).json();
  document.getElementById('dot').classList.toggle('on',d.connected);
- document.getElementById('status').textContent=d.connected?`verbunden · Pulswelle ${d.counts.p||0} · Accel ${d.counts.a||0} · Gyro ${d.counts.g||0} · Puls ${d.counts.h||0}`+(d.counts.p?'':' · keine Pulswelle: auf der Uhr mit „Start + PPG“ starten')+(d.counts.p_zu_kurz?` · ${d.counts.p_zu_kurz} PPG-Zeilen zu kurz (anderer Kanal nötig)`:''):'warte auf Uhr …';
+ document.getElementById('status').textContent=d.connected?`connected · pulse wave ${d.counts.p||0} · accel ${d.counts.a||0} · gyro ${d.counts.g||0} · heart rate ${d.counts.h||0}`+(d.counts.p?'':' · no pulse wave: start with "Start + PPG" on the watch')+(d.counts.p_too_short?` · ${d.counts.p_too_short} PPG lines too short (other channel needed)`:''):'waiting for watch …';
  const n=d.numbers;hr_ppg.textContent=fmt(n.hr_ppg);hr_sensor.textContent=fmt(n.hr_sensor);rmssd.textContent=fmt(n.rmssd);
  breath.textContent=n.breath?`${fmt(n.breath,1)} (${fmt(n.breath_q,2)})`:'–';cand.textContent=`${n.candidates_5min} / ${n.felt_5min}`;
  const now=d.now;const g_=d.diag;
- document.getElementById('diag').textContent=`Kanal v${g_.ch}${g_.auto?' (auto)':''} · Güte ${Object.entries(g_.quality).map(([c,q])=>'v'+c+'='+q).join(' ')||'–'} · Puffer ${g_.ppg_n} Werte / ${g_.ppg_span_s} s · Verzögerung PPG ${g_.lag_ppg_s??'–'} s, Accel ${g_.lag_acc_s??'–'} s · Ausschlag ${g_.filt_range}${d.counts.kaputt?' · '+d.counts.kaputt+' Zeilen unlesbar':''}${g_.error?' · '+g_.error:''} · letzte Zeile: ${g_.last_p}`;
+ document.getElementById('diag').textContent=`channel v${g_.ch}${g_.auto?' (auto)':''} · quality ${Object.entries(g_.quality).map(([c,q])=>'v'+c+'='+q).join(' ')||'–'} · buffer ${g_.ppg_n} values / ${g_.ppg_span_s} s · lag PPG ${g_.lag_ppg_s??'–'} s, accel ${g_.lag_acc_s??'–'} s · range ${g_.filt_range}${d.counts.malformed?' · '+d.counts.malformed+' malformed lines':''}${g_.error?' · '+g_.error:''} · last line: ${g_.last_p}`;
  const g=plot('c_ppg',d.ppg.t,d.ppg.y,now-10000,now);
  if(g){const bt=d.beats.filter(b=>b>=now-10000);g.x.fillStyle=css('--beat');
   for(const b of bt){let i=d.ppg.t.findIndex(t=>t>=b);if(i<0)continue;g.x.beginPath();g.x.arc(g.X(b),g.Y(d.ppg.y[i]),3.5,0,7);g.x.fill()}}
  const it=d.ibis.map(r=>r[0]),iv=d.ibis.map(r=>r[1]);
- const gi=plot('c_ibi',it,iv,now-300000,now,{dots:true,lo:400,hi:1800,ticks:true,color:i=>d.ibis[i][2]==='bewegt'?css('--muted'):(d.ibis[i][2]?css('--bad'):css('--line'))});
+ const gi=plot('c_ibi',it,iv,now-300000,now,{dots:true,lo:400,hi:1800,ticks:true,color:i=>d.ibis[i][2]==='moving'?css('--muted'):(d.ibis[i][2]?css('--bad'):css('--line'))});
  if(gi){gi.x.strokeStyle=css('--alt');gi.x.lineWidth=1.5;gi.x.beginPath();let s=false;
   for(const [t,b] of d.hr){if(t<now-300000)continue;const px=gi.X(t),py=gi.Y(60000/b);s?gi.x.lineTo(px,py):gi.x.moveTo(px,py);s=true}gi.x.stroke()}
  vlines(gi,d.felt,css('--felt'),now-300000);
  plot('c_breath',d.breath.t,d.breath.y,now-60000,now,{stroke:css('--alt')});
  plot('c_act',d.activity.t,d.activity.y,now-60000,now,{lo:0,hi:Math.max(0.1,...d.activity.y.slice(-300))});
-}catch(e){document.getElementById('status').textContent='Dashboard-Server nicht erreichbar'}}
+}catch(e){document.getElementById('status').textContent='dashboard server unreachable'}}
 setInterval(tick,250);tick();
 </script></body></html>"""
 

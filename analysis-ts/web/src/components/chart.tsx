@@ -2,7 +2,7 @@ import type * as React from "react";
 import { ResponsiveContainer } from "recharts";
 import { cn } from "@/lib/utils";
 
-/** Gemeinsame Achsen-/Rasteroptik im shadcn-Stil. */
+/** Shared axis/grid styling in shadcn style. */
 export const axis = {
   stroke: "var(--muted-foreground)",
   tick: { fill: "var(--muted-foreground)", fontSize: 11 },
@@ -52,7 +52,7 @@ export function Legend({ items }: { items: { label: string; color: string; line?
   );
 }
 
-/** Winzige SVG-Linie für Kennzahl-Karten (ohne Recharts, damit 4 Hz billig bleiben). */
+/** Tiny SVG line for KPI cards (without Recharts, so 4 Hz stays cheap). */
 export function Sparkline({ values, color, className }: { values: (number | null)[]; color: string; className?: string }) {
   const v = values.map((x, i) => [i, x] as const).filter((p): p is readonly [number, number] => p[1] != null);
   if (v.length < 2) return <div className={cn("h-8", className)} />;

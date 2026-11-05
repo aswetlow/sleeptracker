@@ -1,6 +1,6 @@
 /**
- * Live-Kern: Empfang, Verarbeitung und Datenquellen (Uhr, Demo, Replay).
- * Genutzt von src/live.ts (einfache Seite) und server/live_server.ts (React-Dashboard).
+ * Live core: receiving, processing and data sources (watch, demo, replay).
+ * Used by src/live.ts (simple page) and server/live_server.ts (React dashboard).
  */
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createWriteStream, existsSync, mkdirSync, readFileSync, type WriteStream } from "node:fs";
@@ -13,7 +13,7 @@ import { mean, median, std } from "./lib/stats.ts";
 
 export const PPG_FS = 100, IMU_FS = 25, PPG_KEEP_S = 12, IMU_KEEP_S = 70, IBI_KEEP_S = 300;
 
-/** Ringpuffer mit fester Länge (wie deque(maxlen)). */
+/** Fixed-length ring buffer (like deque(maxlen)). */
 class Ring<T> {
   private a: T[] = [];
   constructor(private max: number) {}
@@ -63,26 +63,26 @@ export class State {
     this.rec?.write(s + "\n");
     const t = Number(parts[1]);
     const bad = (why: string) => {
-      this.counts.kaputt = (this.counts.kaputt ?? 0) + 1;
-      this.error = `Zeile nicht lesbar (${why}): ${s.slice(0, 80)}`;
+      this.counts.malformed = (this.counts.malformed ?? 0) + 1;
+      this.error = `unreadable line (${why}): ${s.slice(0, 80)}`;
     };
-    if (parts.length < 3 || Number.isNaN(t)) return bad("Format");
+    if (parts.length < 3 || Number.isNaN(t)) return bad("format");
     this.lastRx = Date.now();
     this.lines++;
     if (kind === "p") {
       this.lastP = s.slice(0, 160);
       const vals = parts[2].trim().split(/\s+/).slice(0, 7).map(Number);
-      if (vals.some(Number.isNaN)) return bad("Zahl");
-      if (vals.length <= this.ch) this.counts.p_zu_kurz = (this.counts.p_zu_kurz ?? 0) + 1;
+      if (vals.some(Number.isNaN)) return bad("number");
+      if (vals.length <= this.ch) this.counts.p_too_short = (this.counts.p_too_short ?? 0) + 1;
       while (vals.length < 7) vals.push(NaN);
       this.ppgT.push(t); this.ppgY.push(vals);
     } else if (kind === "a" || kind === "g") {
       const v = parts.slice(2, 5).map(Number);
-      if (v.length < 3 || v.some(Number.isNaN)) return bad("Zahl");
+      if (v.length < 3 || v.some(Number.isNaN)) return bad("number");
       (kind === "a" ? this.acc : this.gyro).push([t, v[0], v[1], v[2]]);
     } else if (kind === "h") {
       const v = Number(parts[2]);
-      if (Number.isNaN(v)) return bad("Zahl");
+      if (Number.isNaN(v)) return bad("number");
       this.hr.push([t, v]);
     } else if (kind === "e" && parts[2].startsWith("felt")) this.felt.push(t);
   }
@@ -119,7 +119,7 @@ export class State {
     if (src.length > IMU_FS * 30) this.computeBreath(src, acc);
   }
 
-  /** Std (ddof 0) von |a| über die letzte Sekunde je Messpunkt. */
+  /** Std (ddof 0) of |a| over the last second for each sample. */
   private rollingStdLeft(acc: Imu[]): number[] {
     const mag = acc.map(([, x, y, z]) => Math.hypot(x, y, z));
     const w = IMU_FS;
@@ -179,16 +179,16 @@ export class State {
       if (prevBeat !== undefined) {
         const ibi = tb - prevBeat;
         if (ibi >= 300 && ibi <= 2500) {
-          const ref = this.ibis.items.slice(-15).filter((x) => x[2] !== "bewegt").map((x) => x[1]);
+          const ref = this.ibis.items.slice(-15).filter((x) => x[2] !== "moving").map((x) => x[1]);
           const med = median(ref.length ? ref : [ibi]);
           let flag = "";
           const prevFlag = this.ibis.last()?.[2];
-          if (mov.length && Math.min(...mov.map((m) => Math.abs(m - tb))) < 3000) flag = "bewegt";
-          else if (ibi < 0.8 * med) flag = "kurz";
-          else if (ibi >= 1.75 * med && ibi <= 2.3 * med) flag = "Puls fehlt";
-          else if (ibi > 1.15 * med && prevFlag === "kurz") flag = "Pause";
+          if (mov.length && Math.min(...mov.map((m) => Math.abs(m - tb))) < 3000) flag = "moving";
+          else if (ibi < 0.8 * med) flag = "short";
+          else if (ibi >= 1.75 * med && ibi <= 2.3 * med) flag = "missed pulse";
+          else if (ibi > 1.15 * med && prevFlag === "short") flag = "pause";
           this.ibis.push([tb, ibi, flag]);
-          if (flag !== "bewegt") this.proms.push(prom[n]);
+          if (flag !== "moving") this.proms.push(prom[n]);
         }
       }
       this.beats.push(tb);
@@ -272,7 +272,7 @@ export class State {
         rmssd: d.length > 5 ? round1(Math.sqrt(d.reduce((s, v) => s + v * v, 0) / d.length)) : null,
         breath: this.breath.rate ? round1(this.breath.rate) : null,
         breath_q: Math.round(this.breath.quality * 100) / 100,
-        candidates_5min: ibis.filter((x) => x[2] && x[2] !== "bewegt").length,
+        candidates_5min: ibis.filter((x) => x[2] && x[2] !== "moving").length,
         felt_5min: this.felt.items.filter((t) => t > now - IBI_KEEP_S * 1000).length,
       },
     };
@@ -281,7 +281,7 @@ export class State {
 
 export function tcpServer(state: State, port: number) {
   const srv = createTcp((sock) => {
-    console.log(`Uhr verbunden (${sock.remoteAddress})`);
+    console.log(`watch connected (${sock.remoteAddress})`);
     let buf = "";
     sock.setEncoding("utf8");
     sock.on("data", (chunk: string) => {
@@ -289,14 +289,14 @@ export function tcpServer(state: State, port: number) {
       let i: number;
       while ((i = buf.indexOf("\n")) >= 0) { state.feed(buf.slice(0, i)); buf = buf.slice(i + 1); }
     });
-    sock.on("close", () => console.log("Uhr getrennt"));
-    sock.on("error", () => { /* Uhr weg */ });
+    sock.on("close", () => console.log("watch disconnected"));
+    sock.on("error", () => { /* watch gone */ });
   });
-  srv.on("error", (e) => console.error(`TCP-Port ${port}: ${e.message}`));
+  srv.on("error", (e) => console.error(`TCP port ${port}: ${e.message}`));
   srv.listen(port, "127.0.0.1");
 }
 
-/** Synthetische Uhr: Puls ~62 bpm, gelegentliche Extrasystole, Atmung 14/min, ab und zu Bewegung. */
+/** Synthetic watch: heart rate ~62 bpm, occasional ectopic beat, breathing 14/min, occasional movement. */
 export function demoFeeder(state: State) {
   let seed = 1;
   const rnd = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
@@ -337,7 +337,7 @@ export function demoFeeder(state: State) {
   }, 100);
 }
 
-/** Gespeicherte Session so abspielen, als käme sie gerade von der Uhr. */
+/** Play back a saved session as if it were coming from the watch right now. */
 export function replayFeeder(state: State, session: string, speed: number) {
   const rows: [number, string][] = [];
   for (const [name, kind] of [["accel.csv", "a"], ["gyro.csv", "g"]] as const) {
@@ -360,53 +360,53 @@ export function replayFeeder(state: State, session: string, speed: number) {
   }
   for (const e of readEvents(session)) if (e.event === "felt") rows.push([e.t, `e,${e.t},felt`]);
   rows.sort((a, b) => a[0] - b[0]);
-  if (!rows.length) { console.error("Replay: keine Daten gefunden"); return; }
+  if (!rows.length) { console.error("replay: no data found"); return; }
   const startWall = Date.now(), startT = rows[0][0];
   let i = 0;
   const timer = setInterval(() => {
     const due = startT + (Date.now() - startWall) * speed;
     while (i < rows.length && rows[i][0] <= due) state.feed(rows[i++][1]);
-    if (i >= rows.length) { clearInterval(timer); console.log("Replay zu Ende"); }
+    if (i >= rows.length) { clearInterval(timer); console.log("replay finished"); }
   }, 50);
 }
 
 export function setupAdb(serial: string | undefined, port: number) {
   const args = [...(serial ? ["-s", serial] : []), "reverse", `tcp:${port}`, `tcp:${port}`];
   const r = spawnSync("adb", args, { encoding: "utf8", timeout: 10000 });
-  if (r.error) { console.log(`adb nicht gefunden – im PATH? Sonst Tunnel von Hand: adb ${args.join(" ")}`); return; }
+  if (r.error) { console.log(`adb not found – is it on PATH? Otherwise set up the tunnel by hand: adb ${args.join(" ")}`); return; }
   if (r.status !== 0 && /more than one/.test(r.stderr + r.stdout) && !serial) {
     const devs = execFileSync("adb", ["devices"], { encoding: "utf8" }).split("\n").slice(1)
       .filter((l) => l.trim().endsWith("device")).map((l) => l.split(/\s+/)[0]);
-    console.log(`Mehrere Geräte: ${devs.join(", ")} – bitte mit --serial wählen.`);
+    console.log(`Several devices: ${devs.join(", ")} – please choose one with --serial.`);
     return;
   }
-  console.log((r.status === 0 ? "Tunnel steht: " : "Tunnel fehlgeschlagen: ") + `adb ${args.join(" ")}` + (r.status === 0 ? "" : `\n${r.stderr.trim()}`));
+  console.log((r.status === 0 ? "Tunnel ready: " : "Tunnel failed: ") + `adb ${args.join(" ")}` + (r.status === 0 ? "" : `\n${r.stderr.trim()}`));
 }
 
 export function openBrowser(url: string) {
   const cmd = process.platform === "win32" ? ["cmd", ["/c", "start", "", url]] : process.platform === "darwin" ? ["open", [url]] : ["xdg-open", [url]];
   try {
     const c = spawn(cmd[0] as string, cmd[1] as string[], { stdio: "ignore", detached: true });
-    c.on("error", () => { /* kein Browser – Adresse steht in der Konsole */ });
+    c.on("error", () => { /* no browser – the address is printed in the console */ });
     c.unref();
-  } catch { /* egal */ }
+  } catch { /* ignore */ }
 }
 
-/** Datei unter sessions/live/ öffnen, in die alles Empfangene mitgeschrieben wird. */
+/** Open a file under sessions/live/ that all received data is recorded to. */
 export function openRecorder(): WriteStream {
   const dir = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "sessions", "live");
   mkdirSync(dir, { recursive: true });
   const d = new Date(), p2 = (n: number) => String(n).padStart(2, "0");
   const path = join(dir, `live_${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}_${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}.txt`);
-  console.log(`Empfangene Daten werden mitgeschrieben: ${path}`);
+  console.log(`Recording received data to: ${path}`);
   return createWriteStream(path, { encoding: "utf8" });
 }
 
-/** Verarbeitung alle 200 ms; Fehler landen in state.error statt den Prozess zu beenden. */
+/** Processing every 200 ms; errors land in state.error instead of ending the process. */
 export function startProcessing(state: State) {
   return setInterval(() => {
     try { state.process(); } catch (e) {
-      const msg = `Verarbeitung: ${(e as Error).name}: ${(e as Error).message}`;
+      const msg = `processing: ${(e as Error).name}: ${(e as Error).message}`;
       if (msg !== state.error) { console.log(msg); console.log((e as Error).stack); }
       state.error = msg;
     }

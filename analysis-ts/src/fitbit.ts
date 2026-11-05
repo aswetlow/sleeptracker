@@ -1,7 +1,7 @@
 /**
- * Fitbit-Export neben die Sekunden-Daten legen (TypeScript-Fassung von analysis/fitbit.py).
- * Erwartet im Session-Ordner fitbit.json oder eine .json/.md/.txt mit dem Export-JSON
- * (Text vor der ersten "{" wird ignoriert).
+ * Put a Fitbit export next to the per-second data (TypeScript version of analysis/fitbit.py).
+ * Expects fitbit.json in the session folder, or a .json/.md/.txt containing the export JSON
+ * (text before the first "{" is ignored).
  */
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { basename, extname, join } from "node:path";
@@ -36,12 +36,12 @@ export function findExport(session: string, explicit?: string): { data: Json; pa
     try {
       const data = JSON.parse(text.slice(i));
       if (data && typeof data === "object" && "fitbit" in data) return { data, path: p };
-    } catch { /* weiter */ }
+    } catch { /* next candidate */ }
   }
   return null;
 }
 
-/** Werte pro lokaler Minute mitteln, Schlüssel = epoch ms der Minute. */
+/** Average values per local minute, key = epoch ms of the minute. */
 function perMinute(rows: Json[] | undefined, col: string): Map<number, number> {
   const acc = new Map<number, number[]>();
   for (const r of rows ?? []) {
@@ -76,7 +76,7 @@ export function stageAt(stages: Fb["stages"], t: number): string | null {
   return out;
 }
 
-/** Schwerkraftrichtung pro Minute (Median je Achse, Einheitsvektor) und Winkel zur Vorminute. */
+/** Gravity direction per minute (median per axis, unit vector) and angle to the previous minute. */
 export function wristPose(acc: { epoch_ms: Float64Array; x: Float64Array; y: Float64Array; z: Float64Array }) {
   const by = new Map<number, number[][]>();
   for (let i = 0; i < acc.epoch_ms.length; i++) {
@@ -116,7 +116,7 @@ export function annotate(minutes: Minute[], fb: Fb, pose: ReturnType<typeof wris
     if (fb.stages.length) m.stage = stageAt(fb.stages, m.minute);
     m.fitbit_hr = fb.hr.get(m.minute) ?? NaN;
     m.spo2 = fb.spo2.get(m.minute) ?? NaN;
-    // HRV alle 5 min: bis zu 4 Minuten nach vorn auffüllen
+    // HRV every 5 min: forward-fill up to 4 minutes
     let h = NaN;
     for (let k = hrvKeys.length - 1; k >= 0; k--) {
       if (hrvKeys[k] <= m.minute) { if (m.minute - hrvKeys[k] <= 4 * MIN) h = fb.hrv.get(hrvKeys[k])!; break; }
@@ -149,9 +149,9 @@ export function lowSpo2Episodes(m: Minute[], moveStarts: number[]): Episode[] {
     const pc = core.length > 1 ? max(core.slice(1).map((r) => r.pose_change_deg ?? NaN)) : 0;
     const endsWithMove = moveStarts.some((t) => t >= b - 3 * MIN && t <= b + 2 * MIN);
     const hrRise = max(core.map((r) => r.hr_max)) - median(core.map((r) => r.hr_mean));
-    const still = !Number.isNaN(pc) && pc < POSE_STILL_DEG;   // wie Python: (nan or 0) < 10 ist False
+    const still = !Number.isNaN(pc) && pc < POSE_STILL_DEG;   // like Python: (nan or 0) < 10 is False
     const verdict = still && endsWithMove && (Number.isNaN(hrRise) || hrRise < 10)
-      ? "vermutlich Lage-Artefakt (Arm unbewegt, endet mit Bewegung, Puls ruhig)" : "unklar";
+      ? "probably a pose artifact (arm still, ends with movement, heart rate calm)" : "unclear";
     const stages = seg.map((r) => r.stage).filter((s): s is string => !!s);
     const counts = new Map<string, number>();
     for (const s of stages) counts.set(s, (counts.get(s) ?? 0) + 1);
@@ -162,7 +162,7 @@ export function lowSpo2Episodes(m: Minute[], moveStarts: number[]): Episode[] {
   });
 }
 
-/** Entsättigungen: ≥ ODI_DROP Punkte unter dem Median der 5 min davor; Folgeminuten zählen einmal. */
+/** Desaturations: ≥ ODI_DROP points below the median of the previous 5 min; consecutive minutes count once. */
 export function odi(m: Minute[]): [number, number] {
   const s = m.filter((r) => Number.isFinite(r.spo2)).map((r) => [r.minute, r.spo2!] as const);
   if (s.length < 10) return [0, NaN];
@@ -180,11 +180,11 @@ const pyVal = (v: unknown) => (v === undefined || v === null ? "–" : String(v)
 
 export function summaryLines(fb: Fb, m: Minute[], breath: { t: number; rate: number; quality: number }[],
   moveStarts: number[], minQuality: number): string[] {
-  const lines = ["", "— Abgleich mit Fitbit —"];
+  const lines = ["", "— Comparison with Fitbit —"];
   const v = fb.vitals, sl = fb.sleep;
   if (sl && Object.keys(sl).length) {
-    lines.push(`Schlaf laut Fitbit: ${sl.minutesAsleep} min, Effizienz ${sl.efficiency} %, `
-      + `Tief ${sl.deepMinutes} / leicht ${sl.lightMinutes} / REM ${sl.remMinutes} / wach ${sl.wakeMinutes} min`);
+    lines.push(`Sleep per Fitbit: ${sl.minutesAsleep} min, efficiency ${sl.efficiency} %, `
+      + `deep ${sl.deepMinutes} / light ${sl.lightMinutes} / REM ${sl.remMinutes} / awake ${sl.wakeMinutes} min`);
   }
   if (breath.length && fb.stages.length) {
     const b = breath.filter((r) => r.quality >= minQuality).map((r) => ({ ...r, stage: stageAt(fb.stages, r.t) }));
@@ -194,13 +194,13 @@ export function summaryLines(fb: Fb, m: Minute[], breath: { t: number; rate: num
       const s = b.filter((r) => r.stage === st).map((r) => r.rate);
       if (s.length) parts.push(`${st} ${f(median(s), 1)} ±${f(std(s), 1)} (Fitbit ${pyVal(ref[st])})`);
     }
-    lines.push(`Atemfrequenz Uhr pro Phase: ${parts.join(", ")}; gesamt Fitbit ${pyVal(v.breathingRate)}`);
+    lines.push(`Watch breathing rate per stage: ${parts.join(", ")}; overall Fitbit ${pyVal(v.breathingRate)}`);
   }
   const both = m.filter((r) => Number.isFinite(r.hr_mean) && Number.isFinite(r.fitbit_hr));
   if (both.length > 30) {
     const d = mean(both.map((r) => r.hr_mean - r.fitbit_hr!));
-    lines.push(`Puls Uhr vs. Fitbit: r = ${f(corr(both.map((r) => r.hr_mean), both.map((r) => r.fitbit_hr!)), 3)}, `
-      + `mittl. Differenz ${d >= 0 ? "+" : ""}${f(d, 1)} bpm`);
+    lines.push(`Heart rate watch vs. Fitbit: r = ${f(corr(both.map((r) => r.hr_mean), both.map((r) => r.fitbit_hr!)), 3)}, `
+      + `mean difference ${d >= 0 ? "+" : ""}${f(d, 1)} bpm`);
   }
   if (m.some((r) => r.stage) && moveStarts.length) {
     const parts: string[] = [];
@@ -210,18 +210,18 @@ export function summaryLines(fb: Fb, m: Minute[], breath: { t: number; rate: num
       const ev = mins.reduce((a, r) => a + r.movement_events, 0);
       parts.push(`${s} ${f((ev / mins.length) * 60, 1)}/h`);
     }
-    lines.push("Bewegung pro Phase: " + parts.join(", "));
+    lines.push("Movement per stage: " + parts.join(", "));
   }
   const sp = m.map((r) => r.spo2 ?? NaN);
   if (sp.some((x) => Number.isFinite(x))) {
     const [n, h] = odi(m);
-    lines.push(`SpO2: Mittel ${f(mean(sp), 1)} %, min ${f(min(sp), 1)} %, ${sp.filter((x) => x < LOW_SPO2).length} min unter ${LOW_SPO2} %, `
-      + `Entsättigungen ≥${ODI_DROP} Punkte: ${n} (${f(h, 1)}/h)`);
-    if (v.hrv !== undefined && v.hrv !== null) lines.push(`HRV (Fitbit): ${v.hrv} ms, Ruhepuls ${v.restingHeartRate}`);
+    lines.push(`SpO2: mean ${f(mean(sp), 1)} %, min ${f(min(sp), 1)} %, ${sp.filter((x) => x < LOW_SPO2).length} min below ${LOW_SPO2} %, `
+      + `desaturations ≥${ODI_DROP} points: ${n} (${f(h, 1)}/h)`);
+    if (v.hrv !== undefined && v.hrv !== null) lines.push(`HRV (Fitbit): ${v.hrv} ms, resting HR ${v.restingHeartRate}`);
   }
   if (fb.room.length) {
     const hum = mean(fb.room.map((r) => r.humidity));
-    lines.push(`Raum: ${f(mean(fb.room.map((r) => r.temperature)), 1)} °C, ${f(hum)} % Luftfeuchte` + (hum > 60 ? " (über 60 %)" : ""));
+    lines.push(`Room: ${f(mean(fb.room.map((r) => r.temperature)), 1)} °C, ${f(hum)} % humidity` + (hum > 60 ? " (above 60 %)" : ""));
   }
   return lines;
 }

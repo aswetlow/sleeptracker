@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-Analyse einer SleepLogger-Nacht.
+Analysis of one SleepLogger night.
 
-    python analyze.py <session-ordner> [--plot]
+    python analyze.py <session-folder> [--plot]
 
-Liest accel.csv, gyro.csv (falls vorhanden) und hr.csv, findet Bewegungs-Events,
-misst die Pulsreaktion darauf, schätzt in ruhigen Phasen die Atemfrequenz und
-markiert periodische Pulsspitzen-Muster (zyklische Herzfrequenzvariation).
-Schreibt movement_events.csv, breathing.csv, cvhr_episodes.csv, per_minute.csv
-und summary.txt in den Ordner.
+Reads accel.csv, gyro.csv (if present) and hr.csv, finds movement events,
+measures the heart-rate response to them, estimates the breathing rate in quiet phases and
+flags periodic heart-rate spike patterns (cyclic variation of heart rate).
+Writes movement_events.csv, breathing.csv, cvhr_episodes.csv, per_minute.csv
+and summary.txt into the folder.
 """
 import argparse
 import warnings
@@ -18,18 +18,18 @@ import numpy as np
 import pandas as pd
 from scipy import signal
 
-ACTIVITY_WINDOW_S = 1.0     # Fenster für Bewegungsintensität
-MERGE_GAP_S = 5.0           # Events mit kleinerer Lücke werden zusammengefasst
+ACTIVITY_WINDOW_S = 1.0     # window for movement intensity
+MERGE_GAP_S = 5.0           # events with a smaller gap are merged
 MIN_EVENT_S = 1.0
-THRESHOLD_K = 6.0           # Schwelle = Median + K * MAD der Ruhe-Aktivität
-MIN_THRESHOLD = 0.05        # m/s², Untergrenze, damit Sensorrauschen/Atmung nie als Bewegung zählt
+THRESHOLD_K = 6.0           # threshold = median + K * MAD of resting activity
+MIN_THRESHOLD = 0.05        # m/s², floor so sensor noise/breathing never counts as movement
 HR_PRE_S, HR_POST_S = 30, 60
 BREATH_WINDOW_S = 120
 BREATH_STEP_S = 30
-BREATH_BAND_HZ = (0.1, 0.5)  # 6–30 Atemzüge/min
+BREATH_BAND_HZ = (0.1, 0.5)  # 6–30 breaths/min
 BREATH_MIN_QUALITY = 0.4
-CVHR_MIN_RISE_BPM = 6        # Pulsspitze gegenüber dem 3-min-Median
-CVHR_CYCLE_S = (25, 100)     # Abstand aufeinanderfolgender Spitzen
+CVHR_MIN_RISE_BPM = 6        # HR spike above the 3-min median
+CVHR_CYCLE_S = (25, 100)     # spacing of consecutive spikes
 CVHR_MIN_CYCLES = 4
 
 
@@ -38,16 +38,16 @@ def load(session: Path):
     hr = pd.read_csv(session / "hr.csv")
     acc["t"] = pd.to_datetime(acc.epoch_ms, unit="ms", utc=True).dt.tz_convert("Europe/Berlin")
     hr["t"] = pd.to_datetime(hr.epoch_ms, unit="ms", utc=True).dt.tz_convert("Europe/Berlin")
-    hr = hr[(hr.bpm > 30) & (hr.accuracy >= 2)]  # 0/1 = unzuverlässig bzw. kein Hautkontakt
+    hr = hr[(hr.bpm > 30) & (hr.accuracy >= 2)]  # 0/1 = unreliable or no skin contact
     gyro_path = session / "gyro.csv"
     gyro = pd.read_csv(gyro_path).sort_values("epoch_ms") if gyro_path.exists() else None
     return acc.sort_values("epoch_ms"), gyro, hr.sort_values("epoch_ms")
 
 
 def resample(df: pd.DataFrame, grid: np.ndarray):
-    """Auf festes Raster bringen (Batching liefert unregelmäßige Abstände)."""
+    """Resample onto a fixed grid (batching delivers irregular spacing)."""
     xyz = np.column_stack([np.interp(grid, df.epoch_ms, df[c]) for c in "xyz"])
-    # Lücken > 1 s (z. B. FIFO-Überlauf) und Ränder als NaN markieren statt zu interpolieren
+    # mark gaps > 1 s (e.g. FIFO overflow) and edges as NaN instead of interpolating
     gaps = np.diff(df.epoch_ms.values) > 1000
     for a, b in zip(df.epoch_ms.values[:-1][gaps], df.epoch_ms.values[1:][gaps]):
         xyz[(grid > a) & (grid < b)] = np.nan
@@ -59,7 +59,7 @@ def movement_events(grid, xyz, fs):
     mag = np.linalg.norm(xyz, axis=1)
     win = int(ACTIVITY_WINDOW_S * fs)
     s = pd.Series(mag)
-    # Std der Magnitude pro Fenster: Lageänderung und Zucken, unabhängig von Schwerkraft-Richtung
+    # std of the magnitude per window: posture changes and twitches, independent of gravity direction
     activity = s.rolling(win, center=True, min_periods=win // 2).std().values
     baseline = np.nanmedian(activity)
     mad = np.nanmedian(np.abs(activity - baseline)) or 1e-3
@@ -83,7 +83,7 @@ def movement_events(grid, xyz, fs):
             merged.append(e)
     merged = [e for e in merged if (e[1] - e[0]) / fs >= MIN_EVENT_S]
 
-    # Lagewechsel: Schwerkraftvektor vorher/nachher vergleichen
+    # posture change: compare gravity vector before/after
     rows = []
     for a, b in merged:
         pre_seg, post_seg = xyz[max(0, a - int(5 * fs)):a], xyz[b:b + int(5 * fs)]
@@ -118,25 +118,25 @@ def hr_response(events: pd.DataFrame, hr: pd.DataFrame):
 
 
 def principal_component(seg):
-    """Projektion auf die Richtung größter Varianz: nutzt alle drei Achsen statt nur einer."""
+    """Projection onto the direction of largest variance: uses all three axes instead of one."""
     seg = seg - seg.mean(axis=0)
     _, vecs = np.linalg.eigh(np.cov(seg.T))
     return seg @ vecs[:, -1]
 
 
 def autocorr_rate(x, fs):
-    """Atemzüge/min aus dem ersten Autokorrelations-Peak; Qualität = Höhe des Peaks (0–1)."""
+    """Breaths/min from the first autocorrelation peak; quality = height of the peak (0–1)."""
     x = (x - x.mean()) / (x.std() + 1e-12)
     ac = np.correlate(x, x, mode="full")[len(x) - 1:] / len(x)
     lo, hi = int(fs / BREATH_BAND_HZ[1]), int(fs / BREATH_BAND_HZ[0])
     peaks, _ = signal.find_peaks(ac[lo:hi])
     if not len(peaks):
         return np.nan, 0.0
-    # Kürzeste Periode nehmen, deren Peak fast so hoch ist wie der höchste – sonst gewinnt bei
-    # unregelmäßigem Atem gern das Doppelte der Periode (halbe Frequenz)
+    # Take the shortest period whose peak is almost as high as the highest one – otherwise irregular
+    # breathing often lets twice the period win (half the rate)
     heights = ac[lo:hi][peaks]
     k = lo + peaks[np.argmax(heights >= 0.8 * heights.max())]
-    # Parabel durch den Peak für Auflösung unterhalb eines Samples
+    # parabola through the peak for sub-sample resolution
     a, b, c = ac[k - 1], ac[k], ac[k + 1]
     shift = 0.5 * (a - c) / (a - 2 * b + c) if (a - 2 * b + c) != 0 else 0.0
     return 60.0 * fs / (k + shift), float(max(ac[k], 0.0))
@@ -144,12 +144,12 @@ def autocorr_rate(x, fs):
 
 def breathing_estimates(grid, sources, activity, thr, fs):
     """
-    Nur in ruhigen Fenstern (BREATH_WINDOW_S, alle BREATH_STEP_S): pro Sensor Bandpass
-    0,1–0,5 Hz, Hauptkomponente über alle Achsen, Periode per Autokorrelation.
-    Gyro und Accelerometer werden getrennt geschätzt; die bessere Qualität gewinnt,
-    stimmen beide überein, wird gemittelt. Danach zeitliche Glättung (gleitender Median),
-    Ausreißer gegen den Verlauf bekommen schlechtere Qualität.
-    Am Handgelenk bleibt das Signal winzig – Werte mit Qualität < BREATH_MIN_QUALITY ignorieren.
+    Only in quiet windows (BREATH_WINDOW_S, every BREATH_STEP_S): per sensor band-pass
+    0.1–0.5 Hz, principal component across all axes, period via autocorrelation.
+    Gyro and accelerometer are estimated separately; the better quality wins,
+    if both agree they are averaged. Then temporal smoothing (rolling median);
+    outliers against the trend get a lower quality.
+    At the wrist the signal stays tiny – ignore values with quality < BREATH_MIN_QUALITY.
     """
     sos = signal.butter(2, BREATH_BAND_HZ, btype="band", fs=fs, output="sos")
     n, step = int(BREATH_WINDOW_S * fs), int(BREATH_STEP_S * fs)
@@ -172,7 +172,7 @@ def breathing_estimates(grid, sources, activity, thr, fs):
         if len(est) == 2:
             (r1, q1), (r2, q2) = est.values()
             if abs(r1 - r2) <= 2:
-                rate, quality, best = (r1 * q1 + r2 * q2) / (q1 + q2), max(q1, q2), "beide"
+                rate, quality, best = (r1 * q1 + r2 * q2) / (q1 + q2), max(q1, q2), "both"
         out.append({"epoch_ms": grid[i + n // 2], "breaths_per_min": rate,
                     "quality": quality, "source": best})
     df = pd.DataFrame(out)
@@ -187,9 +187,9 @@ def breathing_estimates(grid, sources, activity, thr, fs):
 
 def cvhr_episodes(hr: pd.DataFrame, events: pd.DataFrame):
     """
-    Zyklische Herzfrequenzvariation: Pulsspitzen (Weckreaktion am Ende einer Atempause),
-    die sich mit 25–100 s Abstand mindestens CVHR_MIN_CYCLES-mal wiederholen.
-    Typisch für schlafbezogene Atmungsstörungen, aber kein Apnoe-Nachweis und kein AHI.
+    Cyclic variation of heart rate: HR spikes (arousal at the end of a breathing pause)
+    that repeat at least CVHR_MIN_CYCLES times, 25–100 s apart.
+    Typical of sleep-disordered breathing, but no proof of apnea and no AHI.
     """
     if len(hr) < 600:
         return pd.DataFrame(), pd.DataFrame()
@@ -200,14 +200,14 @@ def cvhr_episodes(hr: pd.DataFrame, events: pd.DataFrame):
         bpm[(t > a) & (t < b)] = np.nan
     s = pd.Series(bpm)
     detr = (s - s.rolling(180, center=True, min_periods=60).median()).fillna(0).values
-    with warnings.catch_warnings():  # flache Abschnitte erzeugen harmlose Prominenz-Warnungen
+    with warnings.catch_warnings():  # flat sections cause harmless prominence warnings
         warnings.simplefilter("ignore", RuntimeWarning)
         peaks, props = signal.find_peaks(detr, prominence=CVHR_MIN_RISE_BPM, distance=15, wlen=40)
     if not len(peaks):
         return pd.DataFrame(), pd.DataFrame()
 
     mv = events[["start_ms", "end_ms"]].values if not events.empty else np.empty((0, 2))
-    # Spitzen während langer Bewegung (>30 s: wach, aufgestanden) sind keine Weckreaktion
+    # spikes during long movement (>30 s: awake, got up) are not arousals
     long_mv = mv[(mv[:, 1] - mv[:, 0]) > 30_000] if len(mv) else mv
     awake = np.array([((long_mv[:, 0] - 30_000 <= x) & (long_mv[:, 1] + 30_000 >= x)).any()
                       for x in t[peaks]], bool)
@@ -221,7 +221,7 @@ def cvhr_episodes(hr: pd.DataFrame, events: pd.DataFrame):
                           for x in t[peaks]],
     })
 
-    # Ketten aus Spitzen mit regelmäßigem Abstand bilden
+    # build chains of regularly spaced spikes
     rows, chain = [], [0]
     iv = np.diff(pk.epoch_ms.values) / 1000
     for j, d in enumerate(iv, start=1):
@@ -248,7 +248,7 @@ def cvhr_episodes(hr: pd.DataFrame, events: pd.DataFrame):
 
 
 def battery_drain(session: Path):
-    """Akkustand aus events.csv (App loggt alle 10 min): (Start-%, End-%, %/h) oder None."""
+    """Battery level from events.csv (app logs every 10 min): (start %, end %, %/h) or None."""
     p = session / "events.csv"
     if not p.exists():
         return None
@@ -288,7 +288,7 @@ def main():
     ap.add_argument("session", type=Path)
     ap.add_argument("--fs", type=float, default=25.0)
     ap.add_argument("--plot", action="store_true")
-    ap.add_argument("--fitbit", type=Path, help="Fitbit-Export (Standard: fitbit.json im Session-Ordner)")
+    ap.add_argument("--fitbit", type=Path, help="Fitbit export (default: fitbit.json in the session folder)")
     args = ap.parse_args()
 
     acc, gyro, hr = load(args.session)
@@ -315,49 +315,49 @@ def main():
     gap_s = np.isnan(xyz[:, 0]).sum() / args.fs
     good_breath = breath[breath.quality >= BREATH_MIN_QUALITY] if not breath.empty else breath
     lines = [
-        f"Aufzeichnung: {hours:.2f} h, Datenlücken: {gap_s / 60:.1f} min",
-        *([f"Akku: {b[0]:.0f} % → {b[1]:.0f} % ({b[2]:.1f} %/h, "
+        f"Recording: {hours:.2f} h, data gaps: {gap_s / 60:.1f} min",
+        *([f"Battery: {b[0]:.0f} % → {b[1]:.0f} % ({b[2]:.1f} %/h, "
             f"8 h ≈ {b[2] * 8:.0f} %)"] if (b := battery_drain(args.session)) else []),
-        f"Bewegungs-Events: {len(events)} ({len(events) / max(hours, 1e-9):.1f}/h)",
+        f"Movement events: {len(events)} ({len(events) / max(hours, 1e-9):.1f}/h)",
     ]
     if not events.empty:
         big = events[events.orientation_change_deg > 30]
         lines += [
-            f"  davon Lagewechsel (>30°): {len(big)}",
-            f"  mittlere Dauer: {events.duration_s.mean():.1f} s",
+            f"  of which posture changes (>30°): {len(big)}",
+            f"  mean duration: {events.duration_s.mean():.1f} s",
         ]
         if "hr_delta" in events:
-            lines.append(f"  mittlere Pulsreaktion: +{events.hr_delta.mean():.1f} bpm")
+            lines.append(f"  mean HR response: +{events.hr_delta.mean():.1f} bpm")
     if not hr.empty:
-        lines.append(f"Puls: min {hr.bpm.min():.0f}, Median {hr.bpm.median():.0f}, "
-                     f"max {hr.bpm.max():.0f} bpm ({len(hr)} Werte)")
-    lines.append(f"Atemfrequenz: {len(good_breath)} von {len(breath)} ruhigen Fenstern mit "
-                 f"Qualität ≥{BREATH_MIN_QUALITY}" +
-                 (f", Median {good_breath.breaths_per_min.median():.1f}/min, Quelle: "
+        lines.append(f"Heart rate: min {hr.bpm.min():.0f}, median {hr.bpm.median():.0f}, "
+                     f"max {hr.bpm.max():.0f} bpm ({len(hr)} values)")
+    lines.append(f"Breathing rate: {len(good_breath)} of {len(breath)} quiet windows with "
+                 f"quality ≥{BREATH_MIN_QUALITY}" +
+                 (f", median {good_breath.breaths_per_min.median():.1f}/min, source: "
                   + ", ".join(f"{k} {v}" for k, v in good_breath.source.value_counts().items())
                   if len(good_breath) else ""))
     if not cvhr.empty:
         mins = (cvhr.end_ms - cvhr.start_ms).sum() / 60000
         lines += [
-            f"Periodische Pulsspitzen-Episoden: {len(cvhr)} ({mins:.0f} min, "
-            f"{cvhr.cycles.sum() / max(hours, 1e-9):.1f} Zyklen/h)",
-            f"  mittlerer Zyklus {cvhr.mean_cycle_s.mean():.0f} s, Anstieg "
-            f"{cvhr.mean_rise_bpm.mean():.1f} bpm, mit Bewegung: "
+            f"Periodic HR spike episodes: {len(cvhr)} ({mins:.0f} min, "
+            f"{cvhr.cycles.sum() / max(hours, 1e-9):.1f} cycles/h)",
+            f"  mean cycle {cvhr.mean_cycle_s.mean():.0f} s, rise "
+            f"{cvhr.mean_rise_bpm.mean():.1f} bpm, with movement: "
             f"{cvhr.share_with_movement.mean() * 100:.0f} %",
-            "  Hinweis: Muster passt zu Atmungsstörungen, ist aber kein Nachweis.",
+            "  Note: the pattern fits sleep-disordered breathing but is no proof.",
         ]
     else:
-        lines.append("Periodische Pulsspitzen-Episoden: keine")
+        lines.append("Periodic HR spike episodes: none")
     if fb:
-        lines += [f"(Fitbit-Export: {fb_path.name})"] + \
+        lines += [f"(Fitbit export: {fb_path.name})"] + \
             F.summary_lines(fb, minutes, breath, events, BREATH_MIN_QUALITY)[1:]
         for _, e in episodes.iterrows():
             lines.append(f"  SpO2 < {F.LOW_SPO2} %: {e.start:%H:%M}–{e.end:%H:%M} ({e.minutes} min, "
-                         f"min {e.spo2_min:.1f} %, Armlage ±{e.max_pose_change_deg:.0f}°, "
-                         f"Phase {e.stage}) → {e.verdict}")
+                         f"min {e.spo2_min:.1f} %, arm pose ±{e.max_pose_change_deg:.0f}°, "
+                         f"stage {e.stage}) → {e.verdict}")
         if episodes is not None and len(episodes):
-            lines.append("  Hinweis: Uhr-SpO2 ist am Handgelenk störanfällig. Wiederholt sich das, "
-                         "mit Finger-Pulsoximeter prüfen.")
+            lines.append("  Note: watch SpO2 at the wrist is error-prone. If this repeats, "
+                         "check with a finger pulse oximeter.")
     summary = "\n".join(lines)
     print(summary)
 
@@ -379,7 +379,7 @@ def main():
             ax = [ax[1], ax[2], ax[3], ax[4], ax[0], ax[5]]
         else:
             fig, ax = plt.subplots(4, 1, sharex=True, figsize=(14, 10))
-        ax[0].plot(minutes.index, minutes.activity_mean); ax[0].set_ylabel("Aktivität")
+        ax[0].plot(minutes.index, minutes.activity_mean); ax[0].set_ylabel("Activity")
         ax[1].bar(minutes.index, minutes.movement_events, width=1 / 1440)
         ax[1].set_ylabel("Events/min")
         if "hr_mean" in minutes:
@@ -387,7 +387,7 @@ def main():
             if "fitbit_hr" in minutes:
                 ax[2].plot(minutes.index, minutes.fitbit_hr, alpha=0.5, label="Fitbit")
                 ax[2].legend(loc="upper right")
-            ax[2].set_ylabel("Puls")
+            ax[2].set_ylabel("Heart rate")
             for _, e in cvhr.iterrows():
                 ax[2].axvspan(pd.to_datetime(e.start_ms, unit="ms", utc=True).tz_convert("Europe/Berlin"),
                               pd.to_datetime(e.end_ms, unit="ms", utc=True).tz_convert("Europe/Berlin"),
@@ -400,7 +400,7 @@ def main():
             ax[3].legend(loc="upper right", ncol=4)
         elif "breaths_per_min" in minutes:
             ax[3].plot(minutes.index, minutes.breaths_per_min, ".")
-        ax[3].set_ylabel("Atemzüge/min")
+        ax[3].set_ylabel("Breaths/min")
         fig.tight_layout()
         fig.savefig(args.session / "night.png", dpi=120)
         print(f"Plot: {args.session / 'night.png'}")

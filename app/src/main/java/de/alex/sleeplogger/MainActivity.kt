@@ -27,7 +27,7 @@ class MainActivity : ComponentActivity() {
 
     private val requiredPermissions: Array<String>
         get() = buildList {
-            // Bei targetSdk 34 bildet Wear OS 6 BODY_SENSORS automatisch auf READ_HEART_RATE ab.
+            // With targetSdk 34, Wear OS 6 maps BODY_SENSORS to READ_HEART_RATE automatically.
             add(Manifest.permission.BODY_SENSORS)
             if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
         }.toTypedArray()
@@ -35,7 +35,7 @@ class MainActivity : ComponentActivity() {
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
             if (result.values.all { it }) startLogger(startRaw)
-            else status.text = "Berechtigung fehlt.\nIn Einstellungen › Apps erlauben."
+            else status.text = "Permission missing.\nAllow it in Settings › Apps."
         }
 
     private val refresh = object : Runnable {
@@ -50,21 +50,21 @@ class MainActivity : ComponentActivity() {
         val dm = resources.displayMetrics
         status = TextView(this).apply { gravity = Gravity.CENTER; textSize = 12f; setPadding(0, 8, 0, 8) }
         toggle = Button(this).apply { setOnClickListener { onToggle(false) } }
-        // Zusätzlich die rohen PPG-Sensoren mitschreiben (erst als kurzer Test, Datenmenge unbekannt)
+        // additionally record the raw PPG sensors (first as a short test, data volume unknown)
         rawButton = Button(this).apply { text = "Start + PPG"; setOnClickListener { onToggle(true) } }
-        // Extrasystole gespürt -> Zeitmarke in events.csv ("felt"), als Referenz für ppg.py
+        // ectopic beat felt -> time marker in events.csv ("felt"), as a reference for ppg.py
         markButton = Button(this).apply {
-            text = "Gespürt"
+            text = "Felt"
             textSize = 18f
-            minimumHeight = (dm.heightPixels * 0.28).toInt()   // groß, damit man ihn blind trifft
+            minimumHeight = (dm.heightPixels * 0.28).toInt()   // large, so it can be hit blindly
             setOnClickListener {
                 startService(Intent(this@MainActivity, SensorLoggerService::class.java)
                     .setAction(SensorLoggerService.ACTION_MARK)
                     .putExtra(SensorLoggerService.EXTRA_TIME, System.currentTimeMillis()))
             }
         }
-        // Rundes Display: seitlich und oben/unten Rand lassen, alles in einer ScrollView
-        // (Wischen oder Krone). Reihenfolge: Gespürt oben, Status, Stopp/Start unten.
+        // Round display: leave margins at the sides and top/bottom, everything in a ScrollView
+        // (swipe or crown). Order: Felt at the top, status, Stop/Start at the bottom.
         val padX = (dm.widthPixels * 0.12).toInt()
         val padY = (dm.heightPixels * 0.14).toInt()
         val column = LinearLayout(this).apply {
@@ -82,7 +82,7 @@ class MainActivity : ComponentActivity() {
         val scroll = ScrollView(this).apply {
             isFillViewport = true
             isVerticalScrollBarEnabled = true
-            isFocusableInTouchMode = true      // nötig, damit die Krone (Rotary) scrollt
+            isFocusableInTouchMode = true      // needed so the crown (rotary) scrolls
             addView(column)
         }
         setContentView(scroll)
@@ -111,21 +111,21 @@ class MainActivity : ComponentActivity() {
 
     private fun render() {
         if (SensorLoggerService.isRunning) {
-            // kurz halten, damit "Gespürt" und "Stopp" ohne Scrollen auf den Bildschirm passen
-            status.text = "${SensorLoggerService.lastBpm.toInt()} bpm · Gespürt ${SensorLoggerService.markCount}\n" +
-                (if (SensorLoggerService.rawMode) "PPG ${SensorLoggerService.rawCount / 1000}k" else "ohne PPG") +
+            // keep it short so "Felt" and "Stop" fit on the screen without scrolling
+            status.text = "${SensorLoggerService.lastBpm.toInt()} bpm · felt ${SensorLoggerService.markCount}\n" +
+                (if (SensorLoggerService.rawMode) "PPG ${SensorLoggerService.rawCount / 1000}k" else "no PPG") +
                 (if (SensorLoggerService.liveConnected) " · Live ✓" else "")
-            toggle.text = "Stopp"
+            toggle.text = "Stop"
             rawButton.visibility = android.view.View.GONE
             markButton.visibility = android.view.View.VISIBLE
-            // Im PPG-Test die ersten 20 min Bildschirm anlassen, damit "Gespürt" mit einem Tippen geht.
-            // Danach (z. B. PPG über Nacht) wieder normal ausgehen lassen.
+            // In the PPG test keep the screen on for the first 20 min so "Felt" takes a single tap.
+            // After that (e.g. PPG overnight) let it turn off normally again.
             val keepOn = SensorLoggerService.rawMode &&
                 System.currentTimeMillis() - SensorLoggerService.startedAtMs < 20 * 60_000L
             if (keepOn) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         } else {
-            status.text = "Bereit"
+            status.text = "Ready"
             toggle.text = "Start"
             rawButton.visibility = android.view.View.VISIBLE
             markButton.visibility = android.view.View.GONE
