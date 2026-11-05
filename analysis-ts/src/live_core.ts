@@ -23,6 +23,15 @@ export interface LiveEcg {
   rr: { t: number[]; rr: number[] };
 }
 
+/**
+ * SpO2 experiment: every 2 s, perfusion index PI = (p95 − p5 of the band-passed signal) / mean over the last
+ * 8 s for the LED channels v1, v3, v4 (v6 = green for reference). Which of them are red / infrared is not
+ * known yet; the ratios are what a calibration against a finger oximeter has to decide.
+ * `est` is the night-5 hypothesis 110 − 25·(PI4/PI1): uncalibrated, not a measurement.
+ */
+export interface SpO2Point { t: number; r41: number | null; r31: number | null; r43: number | null; pi1: number | null; pi4: number | null; est: number | null; moving: boolean }
+export const SPO2_WIN_S = 8, SPO2_STEP_MS = 2000, SPO2_KEEP = 450;
+
 /** Fixed-length ring buffer (like deque(maxlen)). */
 class Ring<T> {
   private a: T[] = [];
@@ -64,6 +73,9 @@ export class State {
   lead: { t: number; value: string } | null = null;
   ecgF: Omit<LiveEcg, "events" | "lead" | "rr"> | null = null;
   ecgPeaks = new Ring<number>(600);
+  spo2 = new Ring<SpO2Point>(SPO2_KEEP);
+  oximeter = new Ring<[number, number]>(1000);
+  private spo2Last = 0;
 
   constructor(public fixedCh: number | null, private rec: WriteStream | null) {
     this.ch = fixedCh ?? 6;
@@ -106,6 +118,7 @@ export class State {
     } else if (kind === "l") {           // ECG lead detector
       this.lead = { t, value: parts[2].trim() };
     } else if (kind === "e" && parts[2].startsWith("felt")) this.felt.push(t);
+    else if (kind === "e" && parts[2].startsWith("oximeter ")) this.oximeter.push([t, Number(parts[2].split(" ")[1])]);
   }
 
   /** Last 10 s of ECG: per channel band-pass + R peaks (ecg_probe.detectR), keep the channel that looks most like an ECG. */
@@ -154,6 +167,40 @@ export class State {
     return { t, rr };
   }
 
+  /** Oximeter reading typed into the dashboard: kept for the chart and written into the live recording. */
+  addOximeter(value: number, t = Date.now()) {
+    this.oximeter.push([t, value]);
+    this.rec?.write(`e,${t},oximeter ${value}\n`);
+  }
+
+  private processSpo2(pt: number[], raw: number[][]) {
+    const tEnd = pt[pt.length - 1];
+    if (tEnd - this.spo2Last < SPO2_STEP_MS) return;
+    this.spo2Last = tEnd;
+    let i0 = pt.length - 1;
+    while (i0 > 0 && pt[i0 - 1] > tEnd - SPO2_WIN_S * 1000) i0--;
+    const rows = raw.slice(i0);
+    if (rows.length < PPG_FS * (SPO2_WIN_S - 2)) return;
+    const pi = (c: number): number | null => {
+      const x = rows.map((r) => r[c]);
+      if (x.some((v) => !Number.isFinite(v) || v <= 0)) return null;
+      const m = mean(x);
+      const y = sosfiltfilt(this.sosPpg, x.map((v) => v - m));
+      const s = Array.from(y.subarray(PPG_FS, y.length - PPG_FS)).sort((a, b) => a - b);   // filter edges out
+      return s.length ? (s[Math.floor(0.95 * (s.length - 1))] - s[Math.floor(0.05 * (s.length - 1))]) / m : null;
+    };
+    const [p1, p3, p4] = [pi(1), pi(3), pi(4)];
+    const ratio = (a: number | null, b: number | null) => (a !== null && b !== null && b > 0 ? Math.round((a / b) * 1e4) / 1e4 : null);
+    const r41 = ratio(p4, p1);
+    const mov = this.movingTimes();
+    this.spo2.push({
+      t: tEnd, r41, r31: ratio(p3, p1), r43: ratio(p4, p3),
+      pi1: p1 === null ? null : Math.round(p1 * 1e6) / 1e4, pi4: p4 === null ? null : Math.round(p4 * 1e6) / 1e4,   // in %
+      est: r41 === null ? null : Math.round((110 - 25 * r41) * 10) / 10,
+      moving: mov.some((m) => m > tEnd - SPO2_WIN_S * 1000),
+    });
+  }
+
   process() {
     if (this.ecgT.length) this.processEcg();
     let pt = this.ppgT.items.slice(), raw = this.ppgY.items.slice();
@@ -164,6 +211,7 @@ export class State {
       const o = pt.map((_, i) => i).sort((a, b) => pt[a] - pt[b] || a - b);
       pt = o.map((i) => pt[i]); raw = o.map((i) => raw[i]);
     }
+    if (pt.length > PPG_FS * SPO2_WIN_S) this.processSpo2(pt, raw);
     if (pt.length > PPG_FS * 3) {
       if (this.fixedCh === null && Date.now() - this.chChecked > 5000) this.pickChannel(raw);
       const keep = raw.map((r, i) => i).filter((i) => Number.isFinite(raw[i][this.ch]));
@@ -338,6 +386,8 @@ export class State {
         ? ({ ...(this.ecgF ?? { t: [], y: [], peaks: [], hr: null, ch: 0, fs: 0, looksEcg: false, why: "waiting for data" }),
           events: this.counts.c ?? 0, lead: this.lead, rr: this.ecgRr() } satisfies LiveEcg)
         : null,
+      spo2: this.spo2.items,
+      oximeter: this.oximeter.items,
       numbers: {
         hr_ppg: clean.length >= 3 ? round1(60000 / median(clean.slice(-10))) : null,
         hr_sensor: hrLast ? hrLast[1] : null,

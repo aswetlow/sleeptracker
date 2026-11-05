@@ -3,6 +3,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Legend, Sparkline } from "@/components/chart";
 import { ActivityChart, BreathChart, IbiChart, PpgChart } from "@/components/charts";
 import { EcgTestView, LiveEcgCard } from "@/components/ecg";
+import { Spo2Card } from "@/components/spo2";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -153,6 +154,8 @@ function Dashboard({ d, history, span, setSpan, paused }: { d: LiveData; history
         </Card>
         <Diagnostics d={d} />
       </div>
+
+      {d.spo2.length > 0 && <Spo2Card points={d.spo2} oximeter={d.oximeter} now={d.now} />}
 
       <div className="grid gap-4 lg:grid-cols-3">
         <Card className="lg:col-span-2">

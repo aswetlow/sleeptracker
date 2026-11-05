@@ -69,6 +69,14 @@ async function main() {
     try { res.json(analyzeEcg(dir)); } catch (e) { res.status(500).json({ error: (e as Error).message }); }
   });
 
+  // oximeter reading typed into the SpO2 card (calibration test): {value: 70…100}
+  app.post("/api/oximeter", express.json(), (req, res) => {
+    const v = Number(req.body?.value);
+    if (!Number.isFinite(v) || v < 50 || v > 100) { res.status(400).json({ error: "value 50–100 expected" }); return; }
+    state.addOximeter(v);
+    res.json({ ok: true, t: Date.now(), value: v });
+  });
+
   app.get("/api/stream", (req, res) => {
     res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store", Connection: "keep-alive" });
     res.write("retry: 1000\n\n");

@@ -297,6 +297,20 @@ peaks picked from noise reach ~0.4. Without that check the first version took v2
 If the sensor delivers nothing (`registered=false`, 0 events, or only constant values), that is the answer:
 a third-party app gets no ECG. No workarounds beyond that. Not a medical device, no diagnosis.
 
+## 10b. SpO2 calibration test (experimental)
+The watch has no SpO2 sensor for apps, but the raw PPG has three LED channels besides green (v1 at 20 mA,
+v3/v4 at 4.9 mA, see `raw_ppg_ctrl.csv`). Which of them is red and which infrared is not known. The live
+analyzer (`npm run ui -- --serial …`, watch on "Start + PPG") shows a **SpO2 test** card: perfusion index ratios
+v4/v1, v3/v1, v4/v3 every 2 s (8-s window, moving phases ignored), the uncalibrated night-5 hypothesis
+110 − 25·(v4/v1), a large clock and an input for oximeter readings (saved as `oximeter <value>` in
+`sessions/live/live_<time>.txt`).
+
+Calibration protocol (~10 min, sitting, watch snug, arm resting at heart height, oximeter on the other hand):
+film oximeter and dashboard clock together the whole time; 2 min normal breathing; then 3× exhale fully,
+hold 30–45 s, breathe normally for 90 s. Stop if you get dizzy. Afterwards the ratio that follows the
+oximeter decides the channels and the curve; only then is a live SpO2 number meaningful, and only within the
+range the test reached.
+
 ## 11. Sleep position (calibrated)
 The watch sees how the **wrist** lies, not the torso. With the arm under the pillow or on the hip
 the same body position looks completely different. So the model is personal and needs several arm
