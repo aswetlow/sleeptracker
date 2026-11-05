@@ -231,6 +231,7 @@ npm run analyze -- ..\sessions\<session>       # wie analyze.py (ohne Plot)
 npm run ppg -- ..\sessions\<session>           # wie ppg.py (ohne Plot)
 npm run live -- --serial 192.168.178.35:<Port>  # wie live.py, Titel "SleepLogger live · TS"
 npm run live -- --demo
+npm run ui -- --demo                           # Live-Analyzer mit React-Oberfläche, gleiche Optionen wie live
 npm test                                       # DSP gegen scipy-Referenzwerte
 ```
 Geprüft gegen Python: `summary.txt` auf drei Nächten zeichengleich, `ppg_summary.txt` auf Testsession
