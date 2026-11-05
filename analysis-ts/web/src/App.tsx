@@ -155,7 +155,7 @@ function Dashboard({ d, history, span, setSpan, paused }: { d: LiveData; history
         <Diagnostics d={d} />
       </div>
 
-      {d.spo2.length > 0 && <Spo2Card points={d.spo2} oximeter={d.oximeter} now={d.now} />}
+      {d.spo2.length > 0 && <Spo2Card points={d.spo2} oximeter={d.oximeter} now={d.now} offsetMs={d.clock_offset_ms} />}
 
       <div className="grid gap-4 lg:grid-cols-3">
         <Card className="lg:col-span-2">

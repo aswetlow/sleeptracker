@@ -10,13 +10,22 @@ import { clock, fmt } from "@/lib/utils";
 
 const SPAN = 10 * 60_000;
 
-/** Wall clock with tenths, large enough to be readable in a phone video next to the oximeter. */
-function BigClock() {
-  const [now, setNow] = useState(Date.now());
-  useEffect(() => { const id = setInterval(() => setNow(Date.now()), 100); return () => clearInterval(id); }, []);
+/**
+ * Watch time with tenths (laptop time minus the measured clock offset), large enough to be readable in a
+ * phone video next to the oximeter. Same time base as the PPG samples, so video readings line up directly.
+ */
+function BigClock({ offsetMs }: { offsetMs: number | null }) {
+  const [wall, setWall] = useState(Date.now());
+  useEffect(() => { const id = setInterval(() => setWall(Date.now()), 100); return () => clearInterval(id); }, []);
+  const now = wall - (offsetMs ?? 0);
   return (
-    <div className="rounded-lg border bg-muted/40 px-4 py-3 text-center font-mono text-5xl font-semibold tabular-nums tracking-tight">
-      {clock(now)}<span className="text-3xl text-muted-foreground">.{Math.floor((now % 1000) / 100)}</span>
+    <div className="grid gap-1">
+      <div className="rounded-lg border bg-muted/40 px-4 py-3 text-center font-mono text-5xl font-semibold tabular-nums tracking-tight">
+        {clock(now)}<span className="text-3xl text-muted-foreground">.{Math.floor((now % 1000) / 100)}</span>
+      </div>
+      <div className="text-center text-xs text-muted-foreground">
+        {offsetMs == null ? "laptop time – no watch data yet" : `watch time (laptop ${offsetMs >= 0 ? "+" : "−"}${fmt(Math.abs(offsetMs) / 1000, 2)} s)`}
+      </div>
     </div>
   );
 }
@@ -27,10 +36,10 @@ function OximeterInput() {
   const save = async () => {
     const n = Number(v.replace(",", "."));
     if (!Number.isFinite(n) || n < 50 || n > 100) { setMsg("50–100"); return; }
-    const t = Date.now();
     try {
       const r = await fetch("/api/oximeter", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ value: n }) });
-      setMsg(r.ok ? `${n} % at ${clock(t)} saved` : `error ${r.status}`);
+      const j = r.ok ? await r.json() as { t: number } : null;
+      setMsg(j ? `${n} % at ${clock(j.t)} (watch time) saved` : `error ${r.status}`);
       if (r.ok) setV("");
     } catch (e) { setMsg((e as Error).message); }
   };
@@ -48,7 +57,7 @@ function OximeterInput() {
 }
 
 /** Live SpO2 experiment: channel ratios, the uncalibrated estimate and the oximeter readings. */
-export function Spo2Card({ points, oximeter, now }: { points: SpO2Point[]; oximeter: [number, number][]; now: number }) {
+export function Spo2Card({ points, oximeter, now, offsetMs }: { points: SpO2Point[]; oximeter: [number, number][]; now: number; offsetMs: number | null }) {
   const end = points.length ? points[points.length - 1].t : now;
   const recent = points.filter((p) => p.t >= end - SPAN);
   const last = recent[recent.length - 1];
@@ -69,7 +78,7 @@ export function Spo2Card({ points, oximeter, now }: { points: SpO2Point[]; oxime
       </CardHeader>
       <CardContent className="grid gap-4 lg:grid-cols-[18rem_1fr]">
         <div className="grid content-start gap-4">
-          <BigClock />
+          <BigClock offsetMs={offsetMs} />
           <OximeterInput />
           <div className="grid grid-cols-3 gap-2 text-center">
             {([["v4/v1", last?.r41], ["v3/v1", last?.r31], ["v4/v3", last?.r43]] as const).map(([k, v]) => (

@@ -96,6 +96,7 @@ export class State {
     if (parts.length < 3 || Number.isNaN(t)) return bad("format");
     this.lastRx = Date.now();
     this.lines++;
+    this.trackClock(t);
     if (kind === "p") {
       this.lastP = s.slice(0, 160);
       const vals = parts[2].trim().split(/\s+/).slice(0, 7).map(Number);
@@ -167,8 +168,25 @@ export class State {
     return { t, rr };
   }
 
+  /**
+   * Clock offset laptop − watch: the smallest (receive time − sample time) of the last 30 s. Samples come in
+   * batches, so most arrive late; the earliest-arriving ones show the clock difference plus a few ms of transfer.
+   */
+  private clockMin: [number, number][] = [];
+  private trackClock(t: number) {
+    const now = Date.now(), d = now - t, sec = Math.floor(now / 1000);
+    const last = this.clockMin[this.clockMin.length - 1];
+    if (last && last[0] === sec) { if (d < last[1]) last[1] = d; }
+    else { this.clockMin.push([sec, d]); if (this.clockMin.length > 30) this.clockMin.shift(); }
+  }
+  /** Laptop time − watch time in ms (null without data). Watch time = Date.now() − clockOffsetMs. */
+  get clockOffsetMs(): number | null {
+    const recent = this.clockMin.filter(([s]) => s >= Math.floor(Date.now() / 1000) - 30);
+    return recent.length ? Math.min(...recent.map((x) => x[1])) : null;
+  }
+
   /** Oximeter reading typed into the dashboard: kept for the chart and written into the live recording. */
-  addOximeter(value: number, t = Date.now()) {
+  addOximeter(value: number, t = Date.now() - (this.clockOffsetMs ?? 0)) {
     this.oximeter.push([t, value]);
     this.rec?.write(`e,${t},oximeter ${value}\n`);
   }
@@ -386,6 +404,7 @@ export class State {
         ? ({ ...(this.ecgF ?? { t: [], y: [], peaks: [], hr: null, ch: 0, fs: 0, looksEcg: false, why: "waiting for data" }),
           events: this.counts.c ?? 0, lead: this.lead, rr: this.ecgRr() } satisfies LiveEcg)
         : null,
+      clock_offset_ms: this.clockOffsetMs,
       spo2: this.spo2.items,
       oximeter: this.oximeter.items,
       numbers: {

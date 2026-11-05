@@ -73,8 +73,9 @@ async function main() {
   app.post("/api/oximeter", express.json(), (req, res) => {
     const v = Number(req.body?.value);
     if (!Number.isFinite(v) || v < 50 || v > 100) { res.status(400).json({ error: "value 50–100 expected" }); return; }
-    state.addOximeter(v);
-    res.json({ ok: true, t: Date.now(), value: v });
+    const t = Date.now() - (state.clockOffsetMs ?? 0);   // watch time, like the PPG samples
+    state.addOximeter(v, t);
+    res.json({ ok: true, t, value: v });
   });
 
   app.get("/api/stream", (req, res) => {
