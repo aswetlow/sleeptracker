@@ -6,15 +6,15 @@ import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 
 /**
- * Live-Übertragung an den Laptop über den ADB-Tunnel:
- *   adb -s <IP:Port> reverse tcp:9000 tcp:9000   (macht analysis/live.py automatisch)
- * Die Uhr verbindet sich auf 127.0.0.1:9000; ADB leitet das an den Laptop weiter.
- * Kein Laptop da -> Verbindungsversuch alle 3 s, kostet praktisch nichts.
+ * Live streaming to the laptop over the ADB tunnel:
+ *   adb -s <IP:port> reverse tcp:9000 tcp:9000   (analysis/live.py does this automatically)
+ * The watch connects to 127.0.0.1:9000; ADB forwards that to the laptop.
+ * No laptop -> a connection attempt every 3 s, which costs practically nothing.
  *
- * Zeilenformat (Text, eine Messung pro Zeile):
- *   a,epoch_ms,x,y,z   Accelerometer      g,epoch_ms,x,y,z   Gyroskop
- *   h,epoch_ms,bpm     Puls               p,epoch_ms,v0 v1 … Roh-PPG
- *   e,epoch_ms,text    Ereignis (z. B. felt)                  k  Keepalive
+ * Line format (text, one measurement per line):
+ *   a,epoch_ms,x,y,z   accelerometer      g,epoch_ms,x,y,z   gyroscope
+ *   h,epoch_ms,bpm     heart rate         p,epoch_ms,v0 v1 … raw PPG
+ *   e,epoch_ms,text    event (e.g. felt)                      k  keepalive
  */
 class LiveStream(private val port: Int = 9000) {
     private val queue = LinkedBlockingQueue<String>(20_000)
@@ -30,7 +30,7 @@ class LiveStream(private val port: Int = 9000) {
         thread.interrupt()
     }
 
-    /** Nicht blockierend; bei vollem Puffer (Laptop zu langsam) wird verworfen. */
+    /** Non-blocking; when the buffer is full (laptop too slow) the line is dropped. */
     fun send(line: String) {
         if (connected) queue.offer(line)
     }
@@ -47,7 +47,7 @@ class LiveStream(private val port: Int = 9000) {
                     while (running) {
                         var line = queue.poll(500, TimeUnit.MILLISECONDS)
                         if (line == null) {
-                            out.write("k\n")       // Keepalive: merkt, wenn der Laptop weg ist
+                            out.write("k\n")       // keepalive: notices when the laptop is gone
                         } else {
                             while (line != null) {
                                 out.write(line)
@@ -60,7 +60,7 @@ class LiveStream(private val port: Int = 9000) {
             } catch (_: InterruptedException) {
                 return
             } catch (_: Exception) {
-                // kein Tunnel / Laptop weg – später nochmal
+                // no tunnel / laptop gone – try again later
             }
             connected = false
             try {

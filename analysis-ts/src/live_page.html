@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>SleepLogger live</title>
 <style>
 :root{--bg:#0f1115;--panel:#171a21;--ink:#e6e8ee;--muted:#8b93a7;--grid:#262b36;--line:#5aa9ff;--beat:#ffb454;--bad:#ff5c6c;--felt:#3ddc97;--alt:#c792ea}
@@ -14,18 +14,18 @@ header{display:flex;align-items:center;gap:12px;padding:12px 16px}h1{font-size:1
 .panel{background:var(--panel);border-radius:10px;margin:0 16px 10px;padding:8px 10px}
 .panel .l{color:var(--muted);font-size:12px;margin-bottom:4px}.diag{color:var(--muted);font:11px/1.4 ui-monospace,monospace;margin-top:4px;word-break:break-all}canvas{width:100%;display:block}
 </style></head><body>
-<header><div id="dot" class="dot"></div><h1>SleepLogger live</h1><span id="status">warte auf Uhr …</span></header>
+<header><div id="dot" class="dot"></div><h1>SleepLogger live</h1><span id="status">waiting for watch …</span></header>
 <div class="tiles">
- <div class="tile"><div class="v" id="hr_ppg">–</div><div class="l">Puls aus Pulswelle (bpm)</div></div>
- <div class="tile"><div class="v" id="hr_sensor">–</div><div class="l">Pulssensor der Uhr (bpm)</div></div>
- <div class="tile"><div class="v" id="rmssd">–</div><div class="l">RMSSD letzte 60 s (ms)</div></div>
- <div class="tile"><div class="v" id="breath">–</div><div class="l">Atemzüge/min (Qualität)</div></div>
- <div class="tile"><div class="v" id="cand">–</div><div class="l">Kandidaten / Gespürt (5 min)</div></div>
+ <div class="tile"><div class="v" id="hr_ppg">–</div><div class="l">Heart rate from pulse wave (bpm)</div></div>
+ <div class="tile"><div class="v" id="hr_sensor">–</div><div class="l">Watch heart-rate sensor (bpm)</div></div>
+ <div class="tile"><div class="v" id="rmssd">–</div><div class="l">RMSSD last 60 s (ms)</div></div>
+ <div class="tile"><div class="v" id="breath">–</div><div class="l">Breaths/min (quality)</div></div>
+ <div class="tile"><div class="v" id="cand">–</div><div class="l">Candidates / felt (5 min)</div></div>
 </div>
-<div class="panel"><div class="l">Pulswelle, letzte 10 s · Punkte = erkannte Schläge</div><canvas id="c_ppg" height="160"></canvas><div class="diag" id="diag"></div></div>
-<div class="panel"><div class="l">Schlagintervalle, letzte 5 min (ms) · rot = auffällig · grau = Bewegung · grün = Gespürt · lila = Pulssensor</div><canvas id="c_ibi" height="160"></canvas></div>
-<div class="panel"><div class="l">Atembewegung, letzte 60 s</div><canvas id="c_breath" height="110"></canvas></div>
-<div class="panel"><div class="l">Bewegung, letzte 60 s</div><canvas id="c_act" height="70"></canvas></div>
+<div class="panel"><div class="l">Pulse wave, last 10 s · dots = detected beats</div><canvas id="c_ppg" height="160"></canvas><div class="diag" id="diag"></div></div>
+<div class="panel"><div class="l">Beat intervals, last 5 min (ms) · red = abnormal · grey = movement · green = felt · purple = heart-rate sensor</div><canvas id="c_ibi" height="160"></canvas></div>
+<div class="panel"><div class="l">Breathing motion, last 60 s</div><canvas id="c_breath" height="110"></canvas></div>
+<div class="panel"><div class="l">Movement, last 60 s</div><canvas id="c_act" height="70"></canvas></div>
 <script>
 const css=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 function setup(c){const r=window.devicePixelRatio||1,w=c.clientWidth,h=c.height/(c._r||1);c._r=r;c.width=w*r;c.height=h*r;
@@ -45,21 +45,21 @@ function vlines(g,ts,color,t0){if(!g)return;g.x.strokeStyle=color;g.x.lineWidth=
 const fmt=(v,d=0)=>v==null?'–':Number(v).toFixed(d);
 async function tick(){try{const d=await (await fetch('/data')).json();
  document.getElementById('dot').classList.toggle('on',d.connected);
- document.getElementById('status').textContent=d.connected?`verbunden · Pulswelle ${d.counts.p||0} · Accel ${d.counts.a||0} · Gyro ${d.counts.g||0} · Puls ${d.counts.h||0}`+(d.counts.p?'':' · keine Pulswelle: auf der Uhr mit „Start + PPG“ starten')+(d.counts.p_zu_kurz?` · ${d.counts.p_zu_kurz} PPG-Zeilen zu kurz (anderer Kanal nötig)`:''):'warte auf Uhr …';
+ document.getElementById('status').textContent=d.connected?`connected · pulse wave ${d.counts.p||0} · accel ${d.counts.a||0} · gyro ${d.counts.g||0} · heart rate ${d.counts.h||0}`+(d.counts.p?'':' · no pulse wave: start with "Start + PPG" on the watch')+(d.counts.p_too_short?` · ${d.counts.p_too_short} PPG lines too short (other channel needed)`:''):'waiting for watch …';
  const n=d.numbers;hr_ppg.textContent=fmt(n.hr_ppg);hr_sensor.textContent=fmt(n.hr_sensor);rmssd.textContent=fmt(n.rmssd);
  breath.textContent=n.breath?`${fmt(n.breath,1)} (${fmt(n.breath_q,2)})`:'–';cand.textContent=`${n.candidates_5min} / ${n.felt_5min}`;
  const now=d.now;const g_=d.diag;
- document.getElementById('diag').textContent=`Kanal v${g_.ch}${g_.auto?' (auto)':''} · Güte ${Object.entries(g_.quality).map(([c,q])=>'v'+c+'='+q).join(' ')||'–'} · Puffer ${g_.ppg_n} Werte / ${g_.ppg_span_s} s · Verzögerung PPG ${g_.lag_ppg_s??'–'} s, Accel ${g_.lag_acc_s??'–'} s · Ausschlag ${g_.filt_range}${d.counts.kaputt?' · '+d.counts.kaputt+' Zeilen unlesbar':''}${g_.error?' · '+g_.error:''} · letzte Zeile: ${g_.last_p}`;
+ document.getElementById('diag').textContent=`channel v${g_.ch}${g_.auto?' (auto)':''} · quality ${Object.entries(g_.quality).map(([c,q])=>'v'+c+'='+q).join(' ')||'–'} · buffer ${g_.ppg_n} values / ${g_.ppg_span_s} s · lag PPG ${g_.lag_ppg_s??'–'} s, accel ${g_.lag_acc_s??'–'} s · range ${g_.filt_range}${d.counts.malformed?' · '+d.counts.malformed+' malformed lines':''}${g_.error?' · '+g_.error:''} · last line: ${g_.last_p}`;
  const g=plot('c_ppg',d.ppg.t,d.ppg.y,now-10000,now);
  if(g){const bt=d.beats.filter(b=>b>=now-10000);g.x.fillStyle=css('--beat');
   for(const b of bt){let i=d.ppg.t.findIndex(t=>t>=b);if(i<0)continue;g.x.beginPath();g.x.arc(g.X(b),g.Y(d.ppg.y[i]),3.5,0,7);g.x.fill()}}
  const it=d.ibis.map(r=>r[0]),iv=d.ibis.map(r=>r[1]);
- const gi=plot('c_ibi',it,iv,now-300000,now,{dots:true,lo:400,hi:1800,ticks:true,color:i=>d.ibis[i][2]==='bewegt'?css('--muted'):(d.ibis[i][2]?css('--bad'):css('--line'))});
+ const gi=plot('c_ibi',it,iv,now-300000,now,{dots:true,lo:400,hi:1800,ticks:true,color:i=>d.ibis[i][2]==='moving'?css('--muted'):(d.ibis[i][2]?css('--bad'):css('--line'))});
  if(gi){gi.x.strokeStyle=css('--alt');gi.x.lineWidth=1.5;gi.x.beginPath();let s=false;
   for(const [t,b] of d.hr){if(t<now-300000)continue;const px=gi.X(t),py=gi.Y(60000/b);s?gi.x.lineTo(px,py):gi.x.moveTo(px,py);s=true}gi.x.stroke()}
  vlines(gi,d.felt,css('--felt'),now-300000);
  plot('c_breath',d.breath.t,d.breath.y,now-60000,now,{stroke:css('--alt')});
  plot('c_act',d.activity.t,d.activity.y,now-60000,now,{lo:0,hi:Math.max(0.1,...d.activity.y.slice(-300))});
-}catch(e){document.getElementById('status').textContent='Dashboard-Server nicht erreichbar'}}
+}catch(e){document.getElementById('status').textContent='dashboard server unreachable'}}
 setInterval(tick,250);tick();
 </script></body></html>

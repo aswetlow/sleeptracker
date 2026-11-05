@@ -2,7 +2,7 @@
   "name": "sleeplogger-analysis-ts",
   "version": "0.1.0",
   "private": true,
-  "description": "TypeScript-Variante der SleepLogger-Auswertung (gleiche Ausgaben wie analysis/*.py)",
+  "description": "TypeScript version of the SleepLogger analysis (same outputs as analysis/*.py)",
   "type": "module",
   "engines": {
     "node": ">=20"

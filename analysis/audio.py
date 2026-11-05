@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
 """
-Audio-Referenz vom Handy für eine SleepLogger-Nacht.
+Audio reference from the phone for one SleepLogger night.
 
-    python audio.py <session-ordner> <aufnahme.m4a|wav> [--start "2026-10-30 23:05:12"]
+    python audio.py <session-folder> <recording.m4a|wav> [--start "2026-10-30 23:05:12"]
 
-Vorher analyze.py auf demselben Session-Ordner laufen lassen, dann vergleicht dieses
-Skript Atemfrequenz und Pulsspitzen der Uhr mit dem, was im Audio zu hören ist.
+Run analyze.py on the same session folder first; this script then compares the watch's
+breathing rate and heart-rate spikes with what can be heard in the audio.
 
-Erkennt pro Sekunde: hörbares Atmen, Schnarchen, laute Ereignisse; daraus Atemfrequenz
-(2-min-Fenster), Atempausen-Kandidaten (10–120 s still direkt nach hörbarem Atmen)
-und laute Ereignisse (Husten, Reden, Japsen, Klatschen).
+Detects per second: audible breathing, snoring, loud events; from that the breathing rate
+(2-min windows), breathing pause candidates (10–120 s of silence right after audible breathing)
+and loud events (coughing, talking, gasping, clapping).
 
-Synchronisation: Startzeit aus --start, Datei-Metadaten oder Dateiname; danach Feinabgleich
-über das Klatschen am Anfang (Knall im Audio ↔ Spitze im Accelerometer).
+Synchronisation: start time from --start, file metadata or file name; then fine alignment
+via the clap at the beginning (bang in the audio ↔ spike in the accelerometer).
 
-m4a/mp3 brauchen ffmpeg im PATH (Windows: `winget install Gyan.FFmpeg` oder `scoop install ffmpeg`).
-WAV geht auch ohne.
+m4a/mp3 need ffmpeg on PATH (Windows: `winget install Gyan.FFmpeg` or `scoop install ffmpeg`).
+WAV works without it.
 """
 import argparse
 import json
@@ -33,31 +33,31 @@ from scipy import signal
 
 import analyze as A
 
-SR = 4000                    # reicht für Atemgeräusche (<2 kHz) und Schnarchen
+SR = 4000                    # enough for breathing sounds (<2 kHz) and snoring
 FRAME = 400                  # 100 ms
 FRAME_HZ = SR / FRAME
-LOW_BAND = (60, 400)         # Schnarch-Grundton
-BREATH_BAND = (400, 1800)    # Atemgeräusch (Rauschen)
+LOW_BAND = (60, 400)         # snoring fundamental
+BREATH_BAND = (400, 1800)    # breathing sound (noise)
 FLOOR_WINDOW_S = 300
-AUDIBLE_DB = 6               # Atemband über Grundrauschen = hörbares Atmen
-SNORE_DB = 15                # tiefes Band über Grundrauschen
-LOUD_DB = 30                 # breitbandig über Grundrauschen (Atmen liegt meist bei 5–20 dB)
+AUDIBLE_DB = 6               # breathing band above noise floor = audible breathing
+SNORE_DB = 15                # low band above noise floor
+LOUD_DB = 30                 # broadband above noise floor (breathing is usually at 5–20 dB)
 PAUSE_MIN_S = 10
-PAUSE_MAX_S = 120            # länger = Atmen nur zu leise, keine Pause
-PAUSE_CONTEXT_S = 20         # direkt davor muss Atmen hörbar gewesen sein
+PAUSE_MAX_S = 120            # longer = breathing just too quiet, not a pause
+PAUSE_CONTEXT_S = 20         # breathing must have been audible right before
 PAUSE_CONTEXT_SHARE = 0.4
 CLAP_DB = 40
-SNORE_TRAIN = 3              # Schnarcher zählen nur in Serien im Atemrhythmus …
-SNORE_INTERVAL_S = (2.5, 8)  # … mit diesem Abstand; einzelne tiefe Geräusche sind meist Rascheln
+SNORE_TRAIN = 3              # snores only count in series at breathing rhythm …
+SNORE_INTERVAL_S = (2.5, 8)  # … with this spacing; single low sounds are mostly rustling
 CLAP_SEARCH_S = 15 * 60
-CLAP_MAX_OFFSET_S = 20       # Handy- und Uhrzeit sind per Netz synchron; mehr Versatz = falsches Paar
+CLAP_MAX_OFFSET_S = 20       # phone and watch clocks are network-synced; a larger offset = wrong pair
 TZ = ZoneInfo("Europe/Berlin")
 
 
-# ---------- Dekodieren ----------
+# ---------- decoding ----------
 
 def pcm_chunks(path: Path, chunk_s=60):
-    """Liefert Mono-Samples (float32, SR Hz) in Blöcken, ohne die ganze Nacht in den RAM zu laden."""
+    """Yields mono samples (float32, SR Hz) in blocks without loading the whole night into RAM."""
     n = SR * chunk_s
     if shutil.which("ffmpeg"):
         proc = subprocess.Popen(
@@ -71,7 +71,7 @@ def pcm_chunks(path: Path, chunk_s=60):
         proc.wait()
         return
     if path.suffix.lower() != ".wav":
-        raise SystemExit("ffmpeg nicht gefunden – für m4a/mp3 installieren oder als WAV exportieren.")
+        raise SystemExit("ffmpeg not found – install it for m4a/mp3 or export as WAV.")
     from scipy.io import wavfile
     rate, data = wavfile.read(path, mmap=True)
     step = rate * chunk_s
@@ -86,7 +86,7 @@ def pcm_chunks(path: Path, chunk_s=60):
 
 
 def frame_features(path: Path):
-    """Pro 100-ms-Frame: Gesamt-, Tiefband- und Atemband-Pegel in dB."""
+    """Per 100-ms frame: total, low-band and breathing-band level in dB."""
     freqs = np.fft.rfftfreq(FRAME, 1 / SR)
     low = (freqs >= LOW_BAND[0]) & (freqs < LOW_BAND[1])
     breath = (freqs >= BREATH_BAND[0]) & (freqs < BREATH_BAND[1])
@@ -103,18 +103,20 @@ def frame_features(path: Path):
         out.append(np.column_stack([10 * np.log10((frames ** 2).mean(axis=1) + 1e-12),
                                     db(low), db(breath)]))
     if not out:
-        raise SystemExit(f"Keine Audiodaten in {path}")
+        raise SystemExit(f"No audio data in {path}")
     return np.vstack(out)
 
 
-# ---------- Startzeit ----------
+# ---------- start time ----------
+
+# German month abbreviations, as written by the Pixel recorder on a German phone
 
 GERMAN_MONTHS = {"jan": 1, "feb": 2, "mär": 3, "mar": 3, "apr": 4, "mai": 5, "jun": 6, "jul": 7,
                  "aug": 8, "sep": 9, "okt": 10, "nov": 11, "dez": 12}
 
 
 def name_time(stem: str, year: int):
-    """Startzeit aus dem Dateinamen: ISO-artig oder wie der Pixel-Rekorder ("30. Okt. um 22-49")."""
+    """Start time from the file name: ISO-like or like the German Pixel recorder ("30. Okt. um 22-49")."""
     m = re.search(r"(\d{4})-?(\d{2})-?(\d{2})[ _T-]?(\d{2})[.:-]?(\d{2})[.:-]?(\d{2})", stem)
     if m:
         return datetime(*map(int, m.groups()), tzinfo=TZ)
@@ -129,9 +131,9 @@ def name_time(stem: str, year: int):
 
 def audio_start(path: Path, cli_start: str | None, duration_s: float, watch_start_ms=None):
     """
-    Sammelt Kandidaten für den Aufnahmestart und nimmt den, der am nächsten am Start der Uhr liegt.
-    Nötig, weil Handys creation_time mal als Start, mal als Ende der Aufnahme schreiben
-    (der Pixel-Rekorder schreibt das Ende).
+    Collects candidates for the recording start and takes the one closest to the watch start.
+    Needed because phones write creation_time sometimes as the start, sometimes as the end of the recording
+    (the Pixel recorder writes the end).
     """
     if cli_start:
         return datetime.fromisoformat(cli_start).replace(tzinfo=TZ), "--start"
@@ -144,25 +146,25 @@ def audio_start(path: Path, cli_start: str | None, duration_s: float, watch_star
         if ct and not ct.startswith("1970"):
             try:
                 t = datetime.fromisoformat(ct.replace("Z", "+00:00"))
-                cands += [(t, "Metadaten (Start)"),
+                cands += [(t, "metadata (start)"),
                           (datetime.fromtimestamp(t.timestamp() - duration_s, tz=timezone.utc),
-                           "Metadaten (Ende − Dauer)")]
+                           "metadata (end − duration)")]
             except ValueError:
                 pass
     mtime_end = datetime.fromtimestamp(os.path.getmtime(path), tz=timezone.utc)
     ref_year = (cands[0][0] if cands else mtime_end).astimezone(TZ).year
     t = name_time(path.stem, ref_year)
     if t:
-        cands.insert(0, (t, "Dateiname"))
+        cands.insert(0, (t, "file name"))
     cands.append((datetime.fromtimestamp(mtime_end.timestamp() - duration_s, tz=timezone.utc),
-                  "Dateizeit (ungenau)"))
+                  "file time (inaccurate)"))
     if watch_start_ms is None:
         return cands[0]
     return min(cands, key=lambda c: abs(c[0].timestamp() * 1000 - watch_start_ms))
 
 
 def clap_offset_ms(frame_ms, rel_db, session: Path):
-    """Klatschen im Audio (erster sehr lauter Knall) gegen größte Accelerometer-Spitze daneben."""
+    """Clap in the audio (first very loud bang) against the largest accelerometer spike nearby."""
     first = frame_ms < frame_ms[0] + CLAP_SEARCH_S * 1000
     cand = np.where(first & (rel_db > CLAP_DB))[0]
     if not len(cand):
@@ -174,17 +176,17 @@ def clap_offset_ms(frame_ms, rel_db, session: Path):
     if len(near) < 10:
         return None
     jerk = np.linalg.norm(np.diff(near[["x", "y", "z"]].values, axis=0), axis=1)
-    if jerk.max() < 5:  # m/s² Sprung zwischen zwei Samples, sonst kein echtes Klatschen
+    if jerk.max() < 5:  # m/s² jump between two samples, otherwise not a real clap
         return None
     t_watch = near.epoch_ms.values[1:][np.argmax(jerk)]
     off = float(t_watch - t_audio)
     return off if abs(off) <= CLAP_MAX_OFFSET_S * 1000 else None
 
 
-# ---------- Auswertung ----------
+# ---------- analysis ----------
 
 def runs(mask):
-    """Start/Ende (exklusiv) zusammenhängender True-Bereiche."""
+    """Start/end (exclusive) of contiguous True runs."""
     d = np.diff(np.concatenate([[0], mask.astype(np.int8), [0]]))
     return np.column_stack([np.where(d == 1)[0], np.where(d == -1)[0]])
 
@@ -194,7 +196,7 @@ def analyse(feat, t0_ms):
     frame_ms = t0_ms + np.arange(n) * 1000 / FRAME_HZ
     total, low, breath = feat.T
 
-    # Grundrauschen: niedriges Perzentil über 5 min, auf 1-s-Basis gerechnet (schnell genug)
+    # noise floor: low percentile over 5 min, computed on a 1-s basis (fast enough)
     def floor(x):
         sec = pd.Series(x[: n // 10 * 10].reshape(-1, 10).min(axis=1))
         f = sec.rolling(FLOOR_WINDOW_S, center=True, min_periods=30).quantile(0.1)
@@ -207,7 +209,7 @@ def analyse(feat, t0_ms):
     snore_f = (rel_low > SNORE_DB) & (low - breath > 3)
     loud_f = (rel_total > LOUD_DB) & ~snore_f
 
-    # Pro Sekunde
+    # per second
     k = n // 10
     sec = lambda a, how: getattr(a[:k * 10].reshape(k, 10), how)(axis=1)
     per_s = pd.DataFrame({
@@ -223,14 +225,14 @@ def analyse(feat, t0_ms):
     if len(sn):
         ok = (np.diff(sn[:, 0]) >= SNORE_INTERVAL_S[0] * 1000) & (np.diff(sn[:, 0]) <= SNORE_INTERVAL_S[1] * 1000)
         keep = np.zeros(len(sn), bool)
-        for a, b in runs(ok):          # b - a Abstände = b - a + 1 Schnarcher in Serie
+        for a, b in runs(ok):          # b - a gaps = b - a + 1 snores in a row
             if b - a + 1 >= SNORE_TRAIN:
                 keep[a:b + 1] = True
         events += [("snore", x, y, "") for x, y in sn[keep]]
     for a, b in runs(loud_f):
         events.append(("loud", frame_ms[a], frame_ms[b - 1], f"{rel_total[a:b].max():.0f} dB"))
 
-    # Pausen: 10–120 s nichts hörbar, direkt davor hörbares Atmen
+    # pauses: 10–120 s of nothing audible, audible breathing right before
     aud = per_s.audible_breath.values
     for a, b in runs(~aud):
         if not PAUSE_MIN_S <= b - a <= PAUSE_MAX_S or a < PAUSE_CONTEXT_S:
@@ -239,11 +241,11 @@ def analyse(feat, t0_ms):
             continue
         end_loud = per_s.loud.values[b:b + 5].any() or per_s.snore.values[b:b + 5].any()
         events.append(("pause", per_s.epoch_ms[a], per_s.epoch_ms[b - 1] + 1000,
-                       f"{b - a} s" + (", endet laut" if end_loud else "")))
+                       f"{b - a} s" + (", ends loud" if end_loud else "")))
     ev = pd.DataFrame(events, columns=["type", "start_ms", "end_ms", "detail"]) \
         .sort_values("start_ms", ignore_index=True)
 
-    # Atemfrequenz aus der Hüllkurve des Atembands
+    # breathing rate from the envelope of the breathing band
     env = pd.Series(np.maximum(rel_breath, 0)).rolling(3, center=True, min_periods=1).mean().values
     sos = signal.butter(2, A.BREATH_BAND_HZ, btype="band", fs=FRAME_HZ, output="sos")
     w, step = int(A.BREATH_WINDOW_S * FRAME_HZ), int(A.BREATH_STEP_S * FRAME_HZ)
@@ -270,14 +272,14 @@ def compare(session: Path, br_audio, ev, lines):
             m = m.dropna(subset=["breaths_per_min_audio"])
             if len(m):
                 m["err"] = (m.breaths_per_min - m.breaths_per_min_audio).abs()
-                lines.append(f"Uhr vs. Audio Atemfrequenz ({len(m)} gemeinsame Fenster):")
+                lines.append(f"Watch vs. audio breathing rate ({len(m)} shared windows):")
                 for lo, hi in ((0, .2), (.2, .4), (.4, .6), (.6, .8), (.8, 1.01)):
                     s = m[(m.quality >= lo) & (m.quality < hi)]
                     if len(s):
-                        lines.append(f"  Uhr-Qualität {lo:.1f}–{min(hi, 1):.1f}: n={len(s)}, "
-                                     f"mittl. Fehler {s.err.mean():.1f}/min, "
+                        lines.append(f"  watch quality {lo:.1f}–{min(hi, 1):.1f}: n={len(s)}, "
+                                     f"mean error {s.err.mean():.1f}/min, "
                                      f"≤2/min: {(s.err <= 2).mean() * 100:.0f} %")
-                lines.append("  → BREATH_MIN_QUALITY dort setzen, wo der Fehler klein wird.")
+                lines.append("  → set BREATH_MIN_QUALITY where the error becomes small.")
                 m.to_csv(session / "breathing_vs_audio.csv", index=False)
 
     p = session / "cvhr_peaks.csv"
@@ -290,21 +292,21 @@ def compare(session: Path, br_audio, ev, lines):
             share = np.mean([hit(t) for t in pk.epoch_ms])
             grid = np.arange(pk.epoch_ms.min(), pk.epoch_ms.max(), 5000)
             chance = np.mean([hit(t) for t in grid]) if len(grid) else 0
-            lines.append(f"Pulsspitzen kurz nach einer hörbaren Atempause: {share * 100:.0f} % "
-                         f"(Zufallsniveau {chance * 100:.0f} %, n={len(pk)})")
+            lines.append(f"HR spikes shortly after an audible breathing pause: {share * 100:.0f} % "
+                         f"(chance level {chance * 100:.0f} %, n={len(pk)})")
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("session", type=Path)
     ap.add_argument("audio", type=Path)
-    ap.add_argument("--start", help='Lokale Startzeit der Aufnahme, z. B. "2026-10-30 23:05:12"')
-    ap.add_argument("--no-clap", action="store_true", help="Keine Feinsynchronisation per Klatschen")
+    ap.add_argument("--start", help='local start time of the recording, e.g. "2026-10-30 23:05:12"')
+    ap.add_argument("--no-clap", action="store_true", help="no fine synchronisation via clap")
     ap.add_argument("--skip-min", type=float, default=0,
-                    help="Erste N Minuten ignorieren (Einschlafen, Hörbuch, Reden)")
+                    help="ignore the first N minutes (falling asleep, audiobook, talking)")
     args = ap.parse_args()
 
-    print("Lese Audio …")
+    print("Reading audio …")
     feat = frame_features(args.audio)
     dur_s = len(feat) / FRAME_HZ
     acc_path = args.session / "accel.csv"
@@ -317,15 +319,15 @@ def main():
     off = None if args.no_clap or not (args.session / "accel.csv").exists() \
         else clap_offset_ms(frame_ms, rel_total, args.session)
     if off is not None:
-        lines.append(f"Klatsch-Synchronisation: Audio um {off / 1000:+.2f} s verschoben")
+        lines.append(f"Clap synchronisation: audio shifted by {off / 1000:+.2f} s")
         per_s["epoch_ms"] += off
         ev[["start_ms", "end_ms"]] += off
         if not br.empty:
             br["epoch_ms"] += off
     else:
-        lines.append("Klatsch-Synchronisation: nicht eindeutig gefunden, Startzeit aus Datei (± einige s)")
+        lines.append("Clap synchronisation: not found clearly, start time from file (± a few s)")
 
-    # Anfang ignorieren und Geräusche während Bewegung der Uhr verwerfen (Rascheln ≠ Schnarchen/Pause)
+    # ignore the beginning and drop sounds during watch movement (rustling ≠ snoring/pause)
     cut = per_s.epoch_ms.iloc[0] + args.skip_min * 60_000
     per_s = per_s[per_s.epoch_ms >= cut]
     ev = ev[ev.start_ms >= cut]
@@ -339,21 +341,21 @@ def main():
         dropped = ev[np.array(during, bool) & ev.type.isin(["snore", "pause"])]
         ev = ev.drop(dropped.index)
         if len(dropped):
-            lines.append(f"Verworfen wegen gleichzeitiger Bewegung: {len(dropped)} Schnarcher/Pausen")
+            lines.append(f"Dropped due to simultaneous movement: {len(dropped)} snores/pauses")
     dur_s = len(per_s)
     hours = max(dur_s / 3600, 1e-9)
     counts = ev.type.value_counts()
     good = br[br.quality >= A.BREATH_MIN_QUALITY] if not br.empty else br
     lines += [
-        f"Atmen hörbar: {per_s.audible_breath.mean() * 100:.0f} % der Zeit",
-        f"Schnarcher: {counts.get('snore', 0)} ({counts.get('snore', 0) / hours:.0f}/h)",
-        f"Atempausen-Kandidaten ({PAUSE_MIN_S}–{PAUSE_MAX_S} s): {counts.get('pause', 0)} "
-        f"({counts.get('pause', 0) / hours:.1f}/h), davon laut beendet: "
-        f"{ev[ev.type == 'pause'].detail.str.contains('laut').sum()}",
-        f"Laute Ereignisse: {counts.get('loud', 0)}",
-        f"Atemfrequenz aus Audio: {len(good)} Fenster" +
-        (f", Median {good.breaths_per_min.median():.1f}/min" if len(good) else ""),
-        "Hinweis: Leises Atmen ist oft unhörbar – eine Pause hier ist ein Kandidat, kein Befund.",
+        f"Breathing audible: {per_s.audible_breath.mean() * 100:.0f} % of the time",
+        f"Snores: {counts.get('snore', 0)} ({counts.get('snore', 0) / hours:.0f}/h)",
+        f"Breathing pause candidates ({PAUSE_MIN_S}–{PAUSE_MAX_S} s): {counts.get('pause', 0)} "
+        f"({counts.get('pause', 0) / hours:.1f}/h), of which ended loud: "
+        f"{ev[ev.type == 'pause'].detail.str.contains('loud').sum()}",
+        f"Loud events: {counts.get('loud', 0)}",
+        f"Breathing rate from audio: {len(good)} windows" +
+        (f", median {good.breaths_per_min.median():.1f}/min" if len(good) else ""),
+        "Note: quiet breathing is often inaudible – a pause here is a candidate, not a finding.",
     ]
     compare(args.session, br, ev, lines)
 

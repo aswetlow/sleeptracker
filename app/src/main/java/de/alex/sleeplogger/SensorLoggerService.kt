@@ -27,8 +27,8 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * Loggt Beschleunigung und Gyroskop (~25 Hz, im Sensor-FIFO gebatcht) und Puls (~1 Hz) in CSV-Dateien.
- * Dateien landen in files/sessions/<start>/ und werden per adb exportiert (siehe README).
+ * Logs acceleration and gyroscope (~25 Hz, batched in the sensor FIFO) and heart rate (~1 Hz) to CSV files.
+ * Files go to files/sessions/<start>/ and are exported via adb (see README).
  */
 class SensorLoggerService : Service(), SensorEventListener {
 
@@ -38,15 +38,15 @@ class SensorLoggerService : Service(), SensorEventListener {
         const val EXTRA_RAW = "raw"
         const val ACTION_MARK = "de.alex.sleeplogger.MARK"
         const val EXTRA_TIME = "time"
-        // Undokumentierte Google-Sensoren der Pixel Watch (siehe `adb shell dumpsys sensorservice`).
-        // Format unbekannt, daher roh: epoch_ms,accuracy,n,v0 v1 ... v(n-1)
+        // Undocumented Google sensors of the Pixel Watch (see `adb shell dumpsys sensorservice`).
+        // Format unknown, hence raw: epoch_ms,accuracy,n,v0 v1 ... v(n-1)
         val RAW_SENSORS = linkedMapOf(
             "com.google.wear.sensor.ppg" to "raw_ppg.csv",
             "com.google.sensor.heart_rate_extended" to "raw_hr_ext.csv",
             "com.google.sensor.ppg_controller" to "raw_ppg_ctrl.csv",
         )
         const val ACCEL_PERIOD_US = 40_000          // 25 Hz
-        const val ACCEL_MAX_LATENCY_US = 10_000_000 // bis zu 10 s im FIFO puffern
+        const val ACCEL_MAX_LATENCY_US = 10_000_000 // buffer up to 10 s in the FIFO
         const val FLUSH_INTERVAL_MS = 30_000L
         const val BATTERY_INTERVAL_MS = 10 * 60_000L
         private const val CHANNEL_ID = "logging"
@@ -79,11 +79,11 @@ class SensorLoggerService : Service(), SensorEventListener {
     private var gyroOut: BufferedWriter? = null
     private var hrOut: BufferedWriter? = null
     private var eventsOut: BufferedWriter? = null
-    private val rawOut = HashMap<Int, BufferedWriter>()   // Sensor-Typ -> Datei
+    private val rawOut = HashMap<Int, BufferedWriter>()   // sensor type -> file
     @Volatile private var live: LiveStream? = null
 
-    // Sensor-Timestamps sind elapsedRealtimeNanos; einmal gegen die Wanduhr verankert,
-    // damit die Zeitreihe nicht springt, wenn die Uhrzeit nachts per NTP korrigiert wird.
+    // Sensor timestamps are elapsedRealtimeNanos; anchored to the wall clock once
+    // so the time series does not jump when the clock is corrected via NTP at night.
     private var epochOffsetNs = 0L
 
     private val flushRunnable = object : Runnable {
@@ -94,7 +94,7 @@ class SensorLoggerService : Service(), SensorEventListener {
         }
     }
 
-    // Solange der Laptop zuschaut: Sensor-FIFOs jede Sekunde leeren, sonst kämen Accel/Gyro in 10-s-Blöcken
+    // while the laptop is watching: flush the sensor FIFOs every second, otherwise accel/gyro would arrive in 10-s blocks
     private val liveRunnable = object : Runnable {
         override fun run() {
             liveConnected = live?.connected == true
@@ -119,7 +119,7 @@ class SensorLoggerService : Service(), SensorEventListener {
             return START_NOT_STICKY
         }
         if (intent?.action == ACTION_MARK) {
-            // Zeitpunkt des Tippens, nicht der Verarbeitung; geschrieben wird auf dem Writer-Thread
+            // time of the tap, not of processing; written on the writer thread
             val at = intent.getLongExtra(EXTRA_TIME, System.currentTimeMillis())
             if (isRunning) handler.post { logEvent("felt", at); markCount++; live?.send("e,$at,felt\n") }
             else stopSelf()
@@ -152,7 +152,7 @@ class SensorLoggerService : Service(), SensorEventListener {
         accelCount = 0; rawCount = 0; markCount = 0; rawMode = raw
         startedAtMs = System.currentTimeMillis()
 
-        // Alle Sensoren mit Metadaten festhalten, kostet nichts und hilft beim Reverse-Engineering.
+        // record all sensors with metadata; costs nothing and helps reverse engineering.
         val all = sensorManager.getSensorList(Sensor.TYPE_ALL)
         File(dir, "sensors.txt").writeText(all.joinToString("\n") {
             "${it.name} | ${it.vendor} | type=${it.type} ${it.stringType} | wakeup=${it.isWakeUpSensor} | " +
@@ -160,16 +160,16 @@ class SensorLoggerService : Service(), SensorEventListener {
                 "res=${it.resolution} | fifo=${it.fifoMaxEventCount} | mode=${it.reportingMode}"
         } + "\n")
 
-        // Wake-up-Accelerometer weckt die CPU selbst, wenn der FIFO voll ist.
-        // Gibt es keins, halten wir einen Partial-Wakelock (kostet mehr Akku).
+        // A wake-up accelerometer wakes the CPU itself when the FIFO is full.
+        // If there is none, we hold a partial wakelock (costs more battery).
         val wakeAccel = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER, true)
         val accel = wakeAccel ?: sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
-        // Gyro sieht die winzige Handgelenksrotation durch Atmung besser als das Accelerometer
+        // the gyro sees the tiny wrist rotation from breathing better than the accelerometer
         val gyro = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
         val hr = sensorManager.getDefaultSensor(Sensor.TYPE_HEART_RATE)
 
         if (wakeAccel == null || hr != null) {
-            // Puls ist kein Wake-up-Sensor; ohne Wakelock gehen im Doze Pulswerte verloren.
+            // heart rate is not a wake-up sensor; without a wakelock heart-rate values are lost in Doze.
             wakeLock = (getSystemService(Context.POWER_SERVICE) as PowerManager)
                 .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "SleepLogger::log")
                 .apply { acquire(12 * 60 * 60 * 1000L) }
@@ -193,7 +193,7 @@ class SensorLoggerService : Service(), SensorEventListener {
                 val s = all.firstOrNull { it.stringType == stringType && !it.isWakeUpSensor }
                 if (s == null) { logEvent("raw_missing $stringType"); continue }
                 rawOut[s.type] = File(dir, file).bufferedWriter().apply { write("epoch_ms,accuracy,n,values\n") }
-                // 0 µs = so schnell, wie der Sensor kann
+                // 0 µs = as fast as the sensor can
                 val ok = sensorManager.registerListener(this, s, 0, 0, handler)
                 logEvent("raw ${s.name} type=${s.type} minDelay=${s.minDelay}us registered=$ok")
                 if (!ok) rawOut.remove(s.type)?.close()
@@ -228,7 +228,7 @@ class SensorLoggerService : Service(), SensorEventListener {
                 live?.send("h,$epochMs,${event.values[0]}\n")
             }
             else -> rawOut[event.sensor.type]?.let { w ->
-                // Hinten stehen meist nur Nullen (PPG: 9 von 16 Werten) – die sparen wir uns
+                // the trailing values are mostly zeros (PPG: 9 of 16 values) – we skip them
                 val v = event.values
                 var n = v.size
                 while (n > 1 && v[n - 1] == 0f) n--
@@ -255,7 +255,7 @@ class SensorLoggerService : Service(), SensorEventListener {
             handler.removeCallbacks(batteryRunnable)
             handler.removeCallbacks(liveRunnable)
             live?.stop(); live = null; liveConnected = false
-            // Schreiben auf dem Writer-Thread abschließen, damit keine Zeilen verloren gehen.
+            // finish writing on the writer thread so no lines are lost.
             handler.post {
                 batteryRunnable.run()
                 handler.removeCallbacks(batteryRunnable)
@@ -273,14 +273,14 @@ class SensorLoggerService : Service(), SensorEventListener {
     private fun buildNotification(): Notification {
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(
-            NotificationChannel(CHANNEL_ID, "Schlaf-Logging", NotificationManager.IMPORTANCE_LOW)
+            NotificationChannel(CHANNEL_ID, "Sleep logging", NotificationManager.IMPORTANCE_LOW)
         )
         val open = PendingIntent.getActivity(
             this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE
         )
         return Notification.Builder(this, CHANNEL_ID)
-            .setContentTitle("SleepLogger läuft")
-            .setContentText("Bewegung + Puls werden aufgezeichnet")
+            .setContentTitle("SleepLogger running")
+            .setContentText("Recording movement + heart rate")
             .setSmallIcon(android.R.drawable.ic_menu_compass)
             .setOngoing(true)
             .setContentIntent(open)

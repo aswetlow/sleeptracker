@@ -1,4 +1,4 @@
-/** Kleine Statistik-Helfer mit pandas-Semantik (NaN wird übersprungen). */
+/** Small statistics helpers with pandas semantics (NaN is skipped). */
 
 export function finite(a: ArrayLike<number>): number[] {
   const o: number[] = [];
@@ -12,7 +12,7 @@ export function mean(a: ArrayLike<number>): number {
   return n ? s / n : NaN;
 }
 
-/** Standardabweichung, ddof wie pandas (1) oder numpy (0). */
+/** Standard deviation, ddof like pandas (1) or numpy (0). */
 export function std(a: ArrayLike<number>, ddof = 1): number {
   const m = mean(a);
   let s = 0, n = 0;
@@ -43,7 +43,7 @@ export function corr(a: ArrayLike<number>, b: ArrayLike<number>): number {
   return sxy / Math.sqrt(sxx * syy);
 }
 
-/** Grenzen eines zentrierten Fensters wie pandas rolling(w, center=True). */
+/** Bounds of a centred window like pandas rolling(w, center=True). */
 function bounds(i: number, w: number, n: number): [number, number] {
   const off = (w - 1) >> 1;
   const end = Math.min(n, i + off + 1);
@@ -51,11 +51,11 @@ function bounds(i: number, w: number, n: number): [number, number] {
   return [start, end];
 }
 
-/** pandas rolling(w, center=True, min_periods).median() – sortiertes Fenster, O(n·w) Verschiebungen. */
+/** pandas rolling(w, center=True, min_periods).median() – sorted window, O(n·w) shifts. */
 export function rollingMedian(a: ArrayLike<number>, w: number, minPeriods: number, center = true): Float64Array {
   const n = a.length, out = new Float64Array(n).fill(NaN);
   const win = new Float64Array(w + 2);
-  let cnt = 0, lo = 0, hi = 0; // aktuelles Fenster [lo, hi)
+  let cnt = 0, lo = 0, hi = 0; // current window [lo, hi)
   const insert = (v: number) => {
     if (Number.isNaN(v)) return;
     let l = 0, r = cnt;
@@ -80,7 +80,7 @@ export function rollingMedian(a: ArrayLike<number>, w: number, minPeriods: numbe
   return out;
 }
 
-/** pandas rolling(w, center, min_periods).std() (ddof=1), direkt pro Fenster gerechnet. */
+/** pandas rolling(w, center, min_periods).std() (ddof=1), computed directly per window. */
 export function rollingStd(a: ArrayLike<number>, w: number, minPeriods: number, center = true): Float64Array {
   const n = a.length, out = new Float64Array(n).fill(NaN);
   for (let i = 0; i < n; i++) {
@@ -96,7 +96,7 @@ export function rollingStd(a: ArrayLike<number>, w: number, minPeriods: number, 
   return out;
 }
 
-/** np.interp (x aufsteigend). */
+/** np.interp (x ascending). */
 export function interp(x: ArrayLike<number>, xp: ArrayLike<number>, fp: ArrayLike<number>): Float64Array {
   const out = new Float64Array(x.length);
   let j = 0;
@@ -107,7 +107,7 @@ export function interp(x: ArrayLike<number>, xp: ArrayLike<number>, fp: ArrayLik
     if (v >= xp[n - 1]) { out[i] = fp[n - 1]; continue; }
     if (v < xp[j]) j = 0;
     while (j < n - 2 && xp[j + 1] <= v) j++;
-    // wie numpy: bei gleichem xp den rechten Wert
+    // like numpy: for equal xp take the right value
     while (j < n - 2 && xp[j + 1] === xp[j + 2] && xp[j + 1] <= v) j++;
     const dx = xp[j + 1] - xp[j];
     out[i] = dx === 0 ? fp[j + 1] : fp[j] + ((v - xp[j]) * (fp[j + 1] - fp[j])) / dx;
@@ -115,7 +115,7 @@ export function interp(x: ArrayLike<number>, xp: ArrayLike<number>, fp: ArrayLik
   return out;
 }
 
-/** Erster Index mit a[i] >= v (np.searchsorted side="left"). */
+/** First index with a[i] >= v (np.searchsorted side="left"). */
 export function searchsorted(a: ArrayLike<number>, v: number, side: "left" | "right" = "left"): number {
   let l = 0, r = a.length;
   while (l < r) {

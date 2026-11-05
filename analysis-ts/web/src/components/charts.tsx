@@ -42,7 +42,7 @@ type IbiPoint = { t: number; ibi: number; flag: string };
 export function IbiChart({ d, span }: { d: LiveData; span: number }) {
   const now = d.now, t0 = now - span;
   const all: IbiPoint[] = d.ibis.filter((r) => r[0] >= t0).map(([t, ibi, flag]) => ({ t, ibi, flag }));
-  const normal = all.filter((p) => !p.flag), odd = all.filter((p) => p.flag && p.flag !== "bewegt"), moved = all.filter((p) => p.flag === "bewegt");
+  const normal = all.filter((p) => !p.flag), odd = all.filter((p) => p.flag && p.flag !== "moving"), moved = all.filter((p) => p.flag === "moving");
   const sensor = d.hr.filter(([t, b]) => t >= t0 && b > 0).map(([t, b]) => ({ t, ibi: 60000 / b }));
   const vals = all.map((p) => p.ibi);
   const lo = Math.min(400, ...vals), hi = Math.max(1600, ...vals.filter((v) => v < 2600));
@@ -62,15 +62,15 @@ export function IbiChart({ d, span }: { d: LiveData; span: number }) {
               <ChartTip
                 title={clock(p.t)}
                 rows={[
-                  { label: p.flag === undefined ? "Pulssensor" : p.flag || "normal", value: `${fmt(p.ibi)} ms`, color: p.flag === undefined ? "var(--chart-5)" : p.flag === "bewegt" ? "var(--chart-6)" : p.flag ? "var(--chart-3)" : "var(--chart-1)" },
-                  { label: "entspricht", value: `${fmt(60000 / p.ibi)} bpm`, color: "transparent" },
+                  { label: p.flag === undefined ? "HR sensor" : p.flag || "normal", value: `${fmt(p.ibi)} ms`, color: p.flag === undefined ? "var(--chart-5)" : p.flag === "moving" ? "var(--chart-6)" : p.flag ? "var(--chart-3)" : "var(--chart-1)" },
+                  { label: "equals", value: `${fmt(60000 / p.ibi)} bpm`, color: "transparent" },
                 ]}
               />
             );
           }}
         />
         {d.felt.filter((t) => t >= t0).map((t) => (
-          <ReferenceLine key={t} x={t} stroke="var(--chart-4)" strokeWidth={2} strokeDasharray="4 3" label={{ value: "gespürt", position: "insideTopLeft", fill: "var(--chart-4)", fontSize: 10 }} />
+          <ReferenceLine key={t} x={t} stroke="var(--chart-4)" strokeWidth={2} strokeDasharray="4 3" label={{ value: "felt", position: "insideTopLeft", fill: "var(--chart-4)", fontSize: 10 }} />
         ))}
         <Line data={sensor} dataKey="ibi" type="stepAfter" stroke="var(--chart-5)" strokeWidth={1.5} dot={false} isAnimationActive={false} />
         <Scatter data={moved} dataKey="ibi" isAnimationActive={false} shape={dot("var(--chart-6)", 2.5)} />

@@ -1,10 +1,10 @@
 /**
- * Schlag-zu-Schlag-Auswertung der rohen Pulswelle (raw_ppg.csv, Knopf "Start + PPG").
- * TypeScript-Fassung von analysis/ppg.py, gleiche Regeln und Ausgabedateien.
+ * Beat-to-beat analysis of the raw pulse wave (raw_ppg.csv, button "Start + PPG").
+ * TypeScript version of analysis/ppg.py, same rules and output files.
  *
  *     npx tsx src/ppg.ts ../sessions/<session> [--channel 6]
  *
- * Kandidaten, keine Diagnose. Validierung nur mit zeitgleichem EKG.
+ * Candidates, not a diagnosis. Validation only with a simultaneous ECG.
  */
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -20,7 +20,7 @@ const WIN_MED = 9;
 
 export interface Ppg { t: Float64Array; ch: Float32Array[] }
 
-/** raw_ppg.csv: epoch_ms,accuracy,n,"v0 v1 …" – Zeilen, deren Zeit nicht größer als die der Vorzeile ist, fallen weg (wie ppg.py). */
+/** raw_ppg.csv: epoch_ms,accuracy,n,"v0 v1 …" – rows whose time is not greater than the previous row's are dropped (like ppg.py). */
 export function loadPpg(session: string): Ppg {
   const buf = readFileSync(join(session, "raw_ppg.csv"));
   let rows = 0;
@@ -50,7 +50,7 @@ export function loadPpg(session: string): Ppg {
   return { t: t.slice(0, r), ch: ch.map((c) => c.slice(0, r)) };
 }
 
-/** Bewegung: Std von |a| über 25 Werte > MOTION_THR, ±3 s aufgeweitet, auf die PPG-Zeitpunkte gelegt. */
+/** Movement: std of |a| over 25 values > MOTION_THR, widened by ±3 s, mapped onto the PPG timestamps. */
 export function motionMask(session: string, tMs: Float64Array): Uint8Array {
   const acc = sortBy(readNumericCsv(join(session, "accel.csv"), ["epoch_ms", "x", "y", "z"]), "epoch_ms");
   const mag = acc.x.map((x, i) => Math.hypot(x, acc.y[i], acc.z[i]));
@@ -58,7 +58,7 @@ export function motionMask(session: string, tMs: Float64Array): Uint8Array {
   const at = interp(tMs, acc.epoch_ms, act);
   const pad = Math.trunc(MOTION_PAD_S * 100);
   const n = tMs.length, out = new Uint8Array(n);
-  // Faltung mit Einsen (Länge 2·pad+1, "same") > 0 == irgendein bewegter Wert in [i-pad, i+pad]
+  // convolution with ones (length 2·pad+1, "same") > 0 == any moving value in [i-pad, i+pad]
   let lastMove = -Infinity;
   for (let i = 0; i < n; i++) if (at[i] > MOTION_THR) lastMove = i; else if (i - lastMove <= pad) out[i] = 1;
   let nextMove = Infinity;
@@ -70,7 +70,7 @@ export function motionMask(session: string, tMs: Float64Array): Uint8Array {
 
 const SOS = (fs: number) => butterBandpass(3, BAND[0], BAND[1], fs);
 
-/** NaN linear auffüllen (Ränder mit nächstem Wert), Mittelwert ab, nullphasig filtern. */
+/** Fill NaN linearly (edges with the nearest value), subtract the mean, filter with zero phase. */
 export function bandpass(x: ArrayLike<number>, fs: number): Float64Array {
   const y = Float64Array.from(x as ArrayLike<number>);
   let prev = -1;
@@ -113,7 +113,7 @@ export interface Beats {
   t: number[]; amp: number[]; corr: number[]; moving: boolean[]; ibi: number[]; clean: boolean[]; ibiMed: number[]; flag: string[];
 }
 export interface PpgEvent {
-  t: number; art: string; ibi: number; ibiNext: number; ibiMedian: number; zwischenwelle: number; folgeschlag: number;
+  t: number; kind: string; ibi: number; ibiNext: number; ibiMedian: number; midWave: number; nextAmp: number;
 }
 
 export function detectBeats(y: Float64Array, fs: number) {
@@ -147,7 +147,7 @@ export function beatCorr(y: Float64Array, pk: number[], fs: number): number[] {
   return corr;
 }
 
-/** pandas rolling(WIN_MED, center, min_periods=4).median() auf einer Liste mit NaN, dann ffill/bfill. */
+/** pandas rolling(WIN_MED, center, min_periods=4).median() on a list with NaN, then ffill/bfill. */
 function medFill(v: number[]): number[] {
   const m = Array.from(rollingMedian(v, WIN_MED, 4));
   let last = NaN;
@@ -178,9 +178,9 @@ export function analyse(tMs: Float64Array, y: Float64Array, fs: number, moving: 
     if (mv || !Number.isFinite(m[i])) continue;
     const r = b.ibi[i] / m[i], rNext = b.ibi[i + 1] / m[i];
     let kind: string;
-    if (r < 0.8 && rNext > 1.1 && r + rNext >= 1.75 && r + rNext <= 2.3 && b.clean[i - 1]) kind = "vorzeitig";
+    if (r < 0.8 && rNext > 1.1 && r + rNext >= 1.75 && r + rNext <= 2.3 && b.clean[i - 1]) kind = "premature";
     else if (r >= 1.75 && r <= 2.3 && b.ibi[i - 1] / m[i] >= 0.85 && b.ibi[i - 1] / m[i] <= 1.15 &&
-      b.ibi[i + 1] / m[i] >= 0.85 && b.ibi[i + 1] / m[i] <= 1.15) kind = "Puls fehlt";
+      b.ibi[i + 1] / m[i] >= 0.85 && b.ibi[i + 1] / m[i] <= 1.15) kind = "missed pulse";
     else continue;
     const a0 = searchsorted(tMs, b.t[i - 1] + 250), b0 = searchsorted(tMs, b.t[i] - 250);
     let mid = NaN;
@@ -189,10 +189,10 @@ export function analyse(tMs: Float64Array, y: Float64Array, fs: number, moving: 
       for (let k = a0; k < b0; k++) { if (y[k] < lo) lo = y[k]; if (y[k] > hi) hi = y[k]; }
       mid = (hi - lo) / (2 * ampMed[i]);
     }
-    const post = b.amp[i + (kind === "vorzeitig" ? 1 : 0)] / ampMed[i];
+    const post = b.amp[i + (kind === "premature" ? 1 : 0)] / ampMed[i];
     b.flag[i] = kind;
-    events.push({ t: b.t[i], art: kind, ibi: b.ibi[i], ibiNext: b.ibi[i + 1], ibiMedian: m[i],
-      zwischenwelle: round2(mid), folgeschlag: round2(post) });
+    events.push({ t: b.t[i], kind, ibi: b.ibi[i], ibiNext: b.ibi[i + 1], ibiMedian: m[i],
+      midWave: round2(mid), nextAmp: round2(post) });
   }
   return { beats: b, events };
 }
@@ -210,7 +210,7 @@ export function hrv(b: Beats) {
     nn.push(i);
   }
   const ibis = nn.map((i) => b.ibi[i]);
-  // Differenzen nur zwischen aufeinanderfolgenden NN-Einträgen, deren Vorgänger in der NN-Liste sauber war
+  // differences only between consecutive NN entries whose predecessor in the NN list was clean
   const d: number[] = [];
   for (let k = 1; k < nn.length; k++) if (b.clean[nn[k - 1]]) d.push(b.ibi[nn[k]] - b.ibi[nn[k - 1]]);
   const sdnn = std(ibis, 1);
@@ -233,20 +233,20 @@ export function checkFelt(markers: number[], b: Beats, events: PpgEvent[], befor
     let found = "", dt = NaN;
     for (let i = 0; i < r.length; i++) {
       const nxt = i + 1 < r.length ? r[i + 1] : NaN;
-      if (r[i] < 0.8 && nxt > 1.1 && r[i] + nxt >= 1.75 && r[i] + nxt <= 2.3) found = "vorzeitig";
-      else if (r[i] >= 1.75 && r[i] <= 2.3) found = "Puls fehlt";
-      else if (r[i] > 1.3 || r[i] < 0.75) found = "unregelmäßig";
+      if (r[i] < 0.8 && nxt > 1.1 && r[i] + nxt >= 1.75 && r[i] + nxt <= 2.3) found = "premature";
+      else if (r[i] >= 1.75 && r[i] <= 2.3) found = "missed pulse";
+      else if (r[i] > 1.3 || r[i] < 0.75) found = "irregular";
       if (found) { dt = (b.t[win[i]] - mk) / 1000; break; }
     }
     const auto = events.filter((e) => e.t > mk - beforeS * 1000 && e.t <= mk + afterS * 1000);
-    return { t: mk, muster: found || "nichts", sekunden: dt, auto: auto.length > 0, median: med, beats: win.length };
+    return { t: mk, pattern: found || "none", secondsBefore: dt, auto: auto.length > 0, median: med, beats: win.length };
   });
 }
 
 function main() {
   const args = process.argv.slice(2);
   const session = args.find((a) => !a.startsWith("--") && args[args.indexOf(a) - 1] !== "--channel");
-  if (!session) { console.error("Aufruf: tsx src/ppg.ts <session> [--channel N]"); process.exit(2); }
+  if (!session) { console.error("Usage: tsx src/ppg.ts <session> [--channel N]"); process.exit(2); }
   const chArg = argValue(args, "--channel");
 
   const { t, ch } = loadPpg(session);
@@ -256,7 +256,7 @@ function main() {
   const moving = motionMask(session, t);
   const still = moving.map((m) => (m ? 0 : 1));
   const [c] = chArg !== undefined ? [Number(chArg), NaN] : pickChannel(ch, fs, still);
-  if (c === null) { console.error("Kein Kanal mit erkennbarer Pulswelle."); process.exit(1); }
+  if (c === null) { console.error("No channel with a recognisable pulse wave."); process.exit(1); }
   const y = bandpass(ch[c], fs);
   const { beats, events } = analyse(t, y, fs, moving);
   const { ibis, sdnn, rmssd } = hrv(beats);
@@ -264,45 +264,45 @@ function main() {
   const hours = (t[t.length - 1] - t[0]) / 3.6e6;
   const cleanH = beats.ibi.reduce((s, v, i) => s + (beats.clean[i] && !Number.isNaN(v) ? v : 0), 0) / 3.6e6;
   const lines = [
-    `PPG: Kanal v${c}, ${f(fs)} Hz, ${f(hours * 60, 1)} min Aufnahme, davon ${f((cleanH / hours) * 100)} % saubere Schlagfolge`,
-    ibis.length ? `Schläge: ${beats.t.length}, Puls aus Intervallen ${f(60000 / mean(ibis), 1)} bpm` : "Schläge: zu wenige",
-    `HRV (nur saubere NN-Intervalle): SDNN ${f(sdnn)} ms, RMSSD ${f(rmssd)} ms`,
+    `PPG: channel v${c}, ${f(fs)} Hz, ${f(hours * 60, 1)} min recording, of which ${f((cleanH / hours) * 100)} % clean beat sequence`,
+    ibis.length ? `Beats: ${beats.t.length}, heart rate from intervals ${f(60000 / mean(ibis), 1)} bpm` : "Beats: too few",
+    `HRV (clean NN intervals only): SDNN ${f(sdnn)} ms, RMSSD ${f(rmssd)} ms`,
   ];
   if (existsSync(join(session, "hr.csv"))) {
     const hr = readNumericCsv(join(session, "hr.csv"), ["bpm", "accuracy"]);
     const ok = Array.from(hr.bpm).filter((v, i) => v > 30 && hr.accuracy[i] >= 2);
-    if (ok.length && ibis.length) lines.push(`Pulssensor der Uhr im selben Zeitraum: ${f(mean(ok), 1)} bpm`);
+    if (ok.length && ibis.length) lines.push(`Watch heart-rate sensor in the same period: ${f(mean(ok), 1)} bpm`);
   }
-  if (!events.length) lines.push("Extrasystolen-Kandidaten: keine");
+  if (!events.length) lines.push("Ectopic beat candidates: none");
   else {
     const counts = new Map<string, number>();
-    for (const e of events) counts.set(e.art, (counts.get(e.art) ?? 0) + 1);
+    for (const e of events) counts.set(e.kind, (counts.get(e.kind) ?? 0) + 1);
     const byCount = [...counts.entries()].sort((a, b) => b[1] - a[1]);
-    lines.push(`Extrasystolen-Kandidaten: ${events.length} (${f(events.length / Math.max(cleanH, 1e-9))} pro sauberer Stunde) – `
+    lines.push(`Ectopic beat candidates: ${events.length} (${f(events.length / Math.max(cleanH, 1e-9))} per clean hour) – `
       + byCount.map(([k, v]) => `${k} ${v}`).join(", "));
     for (const e of events) {
-      lines.push(`  ${hms(e.t)} ${e.art}: ${f(e.ibi)} → ${f(e.ibiNext)} ms (Median ${f(e.ibiMedian)}), `
-        + `Zwischenwelle ${pyNum(e.zwischenwelle)}, Folgeschlag ×${pyNum(e.folgeschlag)}`);
+      lines.push(`  ${hms(e.t)} ${e.kind}: ${f(e.ibi)} → ${f(e.ibiNext)} ms (median ${f(e.ibiMedian)}), `
+        + `mid wave ${pyNum(e.midWave)}, next beat ×${pyNum(e.nextAmp)}`);
     }
-    lines.push("Hinweis: Kandidaten, keine Diagnose. 'Puls fehlt' kann auch ein verpasster Schlag sein.");
+    lines.push("Note: candidates, not a diagnosis. 'missed pulse' can also be a missed beat.");
   }
 
   const markers = feltMarkers(session);
   const felt = markers.length ? checkFelt(markers, beats, events) : [];
   if (felt.length) {
-    const hit = felt.filter((x) => x.muster === "vorzeitig" || x.muster === "Puls fehlt").length;
-    const irr = felt.filter((x) => x.muster === "unregelmäßig").length;
+    const hit = felt.filter((x) => x.pattern === "premature" || x.pattern === "missed pulse").length;
+    const irr = felt.filter((x) => x.pattern === "irregular").length;
     const minutes = beats.t.length ? (beats.t[beats.t.length - 1] - beats.t[0]) / 60000 : 0;
     const chance = minutes ? 1 - Math.exp(((-events.length / Math.max(minutes, 1e-9)) * 9) / 60) : NaN;
-    lines.push(`Gespürt: ${felt.length}× – davon ${hit} mit Extrasystolen-Muster in den 8 s davor, `
-      + `${irr} nur unregelmäßig, ${felt.length - hit - irr} ohne Auffälligkeit `
-      + `(Zufallstreffer-Wahrscheinlichkeit pro Fenster ≈ ${f(chance * 100)} %)`);
-    for (const x of felt) lines.push(`  ${hms(x.t)}: ${x.muster}` + (Number.isFinite(x.sekunden) ? ` (${f(-x.sekunden, 1)} s vorher)` : ""));
+    lines.push(`Felt: ${felt.length}× – of which ${hit} with an ectopic pattern in the 8 s before, `
+      + `${irr} only irregular, ${felt.length - hit - irr} unremarkable `
+      + `(chance of a random hit per window ≈ ${f(chance * 100)} %)`);
+    for (const x of felt) lines.push(`  ${hms(x.t)}: ${x.pattern}` + (Number.isFinite(x.secondsBefore) ? ` (${f(-x.secondsBefore, 1)} s before)` : ""));
     const autoHit = events.filter((e) => markers.some((mk) => mk > e.t - 1000 && mk < e.t + 8000)).length;
-    lines.push(`Automatische Kandidaten ohne Gespürt-Marke in den 8 s danach: ${events.length - autoHit}`);
+    lines.push(`Automatic candidates without a felt marker in the 8 s after: ${events.length - autoHit}`);
     writeCsv(join(session, "ppg_felt.csv"),
-      ["epoch_ms", "muster", "sekunden_vor_marke", "kandidat_automatisch", "median_ibi_ms", "beats_im_fenster"],
-      felt.map((x) => [x.t, x.muster, x.sekunden, x.auto, x.median, x.beats]));
+      ["epoch_ms", "pattern", "seconds_before_marker", "auto_candidate", "median_ibi_ms", "beats_in_window"],
+      felt.map((x) => [x.t, x.pattern, x.secondsBefore, x.auto, x.median, x.beats]));
   }
 
   const text = lines.join("\n");
@@ -311,11 +311,11 @@ function main() {
   writeCsv(join(session, "ppg_beats.csv"), ["epoch_ms", "amp", "corr", "moving", "ibi_ms", "clean", "ibi_med", "flag"],
     beats.t.map((tt, i) => [tt, beats.amp[i], beats.corr[i], beats.moving[i], beats.ibi[i], beats.clean[i], beats.ibiMed[i], beats.flag[i]]));
   writeCsv(join(session, "ppg_events.csv"),
-    ["epoch_ms", "art", "ibi_ms", "ibi_next_ms", "ibi_median_ms", "zwischenwelle_rel", "folgeschlag_amp_rel"],
-    events.map((e) => [e.t, e.art, e.ibi, e.ibiNext, e.ibiMedian, e.zwischenwelle, e.folgeschlag]));
+    ["epoch_ms", "kind", "ibi_ms", "ibi_next_ms", "ibi_median_ms", "mid_wave_rel", "next_beat_amp_rel"],
+    events.map((e) => [e.t, e.kind, e.ibi, e.ibiNext, e.ibiMedian, e.midWave, e.nextAmp]));
 }
 
-/** Zahl wie Pythons str(float) bei gerundeten Werten: 0.5, 1.0, 0.17 */
+/** Number like Python's str(float) for rounded values: 0.5, 1.0, 0.17 */
 const pyNum = (v: number) => (Number.isNaN(v) ? "nan" : Number.isInteger(v) ? v.toFixed(1) : String(v));
 
 if (import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith("ppg.ts")) main();

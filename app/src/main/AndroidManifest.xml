@@ -4,13 +4,13 @@
     <uses-feature android:name="android.hardware.type.watch" />
 
     <uses-permission android:name="android.permission.BODY_SENSORS" />
-    <!-- Ab Wear OS 6 / API 36 ersetzt diese Permission BODY_SENSORS -->
+    <!-- From Wear OS 6 / API 36 on, this permission replaces BODY_SENSORS -->
     <uses-permission android:name="android.permission.health.READ_HEART_RATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_HEALTH" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
-    <!-- Live-Ansicht: Socket zu 127.0.0.1, per adb reverse zum Laptop -->
+    <!-- Live view: socket to 127.0.0.1, forwarded to the laptop via adb reverse -->
     <uses-permission android:name="android.permission.INTERNET" />
 
     <application

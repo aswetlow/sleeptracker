@@ -4,7 +4,7 @@ import { butterBandpass, findPeaks, sosfiltfilt } from "../src/lib/dsp.ts";
 import { f } from "../src/lib/io.ts";
 import { rollingMedian } from "../src/lib/stats.ts";
 
-// Referenzwerte aus scipy 1.16 / pandas 3.0
+// reference values from scipy 1.16 / pandas 3.0
 const close = (a: number, b: number, tol = 1e-9) => assert.ok(Math.abs(a - b) < tol, `${a} != ${b}`);
 
 /** |H(e^jw)| eines SOS-Filters */
@@ -19,14 +19,14 @@ function gain(sos: number[][], fHz: number, fs: number) {
   return g;
 }
 
-test("Butterworth-Bandpass hat -3 dB an den Eckfrequenzen und 1 in der Mitte", () => {
+test("Butterworth band-pass has -3 dB at the corner frequencies and 1 in the middle", () => {
   const sos = butterBandpass(3, 0.6, 3.5, 100);
   close(gain(sos, 0.6, 100), Math.SQRT1_2, 1e-9);
   close(gain(sos, 3.5, 100), Math.SQRT1_2, 1e-9);
   close(gain(sos, Math.sqrt(0.6 * 3.5) * 1.0, 100), 1, 1e-2);
 });
 
-test("sosfiltfilt wie scipy", () => {
+test("sosfiltfilt like scipy", () => {
   const sos = butterBandpass(2, 0.1, 0.5, 25);
   const x = Array.from({ length: 200 }, (_, i) => Math.sin(i / 3) + i * 0.01);
   const y = sosfiltfilt(sos, x);
@@ -34,18 +34,18 @@ test("sosfiltfilt wie scipy", () => {
     .forEach(([i, v]) => close(y[i], v, 1e-10));
 });
 
-test("find_peaks mit Plateau, distance und prominence wie scipy", () => {
+test("find_peaks with plateau, distance and prominence like scipy", () => {
   const { peaks, prominences } = findPeaks([0, 1, 3, 1, 0, 2, 2, 2, 0, 5, 1, 0, 1, 0], { distance: 2, prominence: 0.5 });
   assert.deepEqual(peaks, [2, 6, 9, 12]);
   assert.deepEqual(Array.from(prominences), [3, 2, 5, 1]);
 });
 
-test("rolling median zentriert wie pandas (gerades Fenster)", () => {
+test("centred rolling median like pandas (even window)", () => {
   const m = rollingMedian(Array.from({ length: 20 }, (_, i) => i), 4, 1);
   assert.deepEqual(Array.from(m.slice(0, 6)), [0.5, 1, 1.5, 2.5, 3.5, 4.5]);
 });
 
-test("Rundung wie Python-Format", () => {
+test("rounding like Python format", () => {
   assert.equal(f(2.25, 1), "2.2");
   assert.equal(f(0.5), "0");
   assert.equal(f(1.5), "2");

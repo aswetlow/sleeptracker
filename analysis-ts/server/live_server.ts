@@ -1,11 +1,11 @@
 /**
- * Live-Analyzer mit React-Oberfläche: Express liefert Daten per Server-Sent Events (/api/stream)
- * und die gebaute Seite aus web/dist. Gleiche Verarbeitung wie src/live.ts (live_core.ts).
+ * Live analyzer with a React UI: Express serves data via server-sent events (/api/stream)
+ * and the built page from web/dist. Same processing as src/live.ts (live_core.ts).
  *
  *     npm run ui -- --demo
  *     npm run ui -- --serial 192.168.178.35:41773
  *     npm run ui -- --replay ../sessions/<session> --speed 4
- *     npm run ui:dev -- --demo        # mit Vite-Hot-Reload für die Oberfläche
+ *     npm run ui:dev -- --demo        # with Vite hot reload for the UI
  */
 import express from "express";
 import { existsSync, type WriteStream } from "node:fs";
@@ -39,7 +39,7 @@ async function main() {
 
   const meta: Meta = {
     mode,
-    source: mode === "demo" ? "Synthetische Uhr" : mode === "replay" ? `Replay ${replay}` : serial ? `Uhr ${serial}` : "Uhr (USB/ADB)",
+    source: mode === "demo" ? "Synthetic watch" : mode === "replay" ? `Replay ${replay}` : serial ? `Watch ${serial}` : "Watch (USB/ADB)",
     tcpPort: port,
     recording: rec !== null,
   };
@@ -63,7 +63,7 @@ async function main() {
   } else {
     const dist = join(WEB, "dist");
     if (!existsSync(join(dist, "index.html"))) {
-      console.error("Oberfläche nicht gebaut: npm run ui:build (oder npm run ui, das baut vorher).");
+      console.error("UI not built: npm run ui:build (or npm run ui, which builds first).");
       process.exit(1);
     }
     app.use(express.static(dist, { index: "index.html" }));
@@ -71,10 +71,10 @@ async function main() {
 
   app.listen(http, "127.0.0.1", () => {
     const url = `http://localhost:${http}`;
-    console.log(`Live-Analyzer: ${url}  (Strg+C beendet)`);
+    console.log(`Live analyzer: ${url}  (Ctrl+C to stop)`);
     if (!has("--no-browser")) setTimeout(() => openBrowser(url), 1000);
   });
-  process.on("SIGINT", () => { console.log("\nbeendet"); rec?.end(); process.exit(0); });
+  process.on("SIGINT", () => { console.log("\nstopped"); rec?.end(); process.exit(0); });
 }
 
 main();

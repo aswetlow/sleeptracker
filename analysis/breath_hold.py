@@ -1,17 +1,17 @@
 """
-Atempausen-Test: Sieht die Uhr willkürliches Luftanhalten?
+Breath-hold test: does the watch see voluntary breath holding?
 
-Protokoll (siehe README, Abschnitt 7):
-  Start (am besten "Start + PPG"), 2 min ruhig atmen, Handgelenk schütteln + Stoppuhr starten,
-  ab 0:30 fünfmal 20 s Luft anhalten / 40 s atmen, bei ~5:30 nochmal schütteln, Stopp.
+Protocol (see README, section 7):
+  Start (preferably "Start + PPG"), breathe calmly for 2 min, shake the wrist + start a stopwatch,
+  from 0:30 hold your breath five times for 20 s / breathe for 40 s, shake again at ~5:30, stop.
 
-Auswertung:
-  - Zeitmarke = erstes kräftiges Schütteln nach der Ruhephase (oder --marker HH:MM:SS)
-  - Atembewegung: Bandpass 0,1–0,7 Hz, Hauptkomponente über die Achsen (Gyro und Accelerometer getrennt)
-  - Amplitude: gleitender RMS über 5 s, normiert auf den Median der Testphase (≈ normales Atmen)
-  - Pause erkannt: Amplitude < PAUSE_RATIO für ≥ MIN_PAUSE_S
-  - Abgleich mit den geplanten Pausen: Treffer, Fehlalarme, Zeitversatz
-  - Puls pro Pause (vorher / während / danach), bei PPG-Rohdaten zusätzlich die Atemmodulation der Pulswelle
+Analysis:
+  - time marker = first strong shake after the resting phase (or --marker HH:MM:SS)
+  - breathing motion: band-pass 0.1–0.7 Hz, principal component across the axes (gyro and accelerometer separately)
+  - amplitude: rolling RMS over 5 s, normalised to the median of the test phase (≈ normal breathing)
+  - pause detected: amplitude < PAUSE_RATIO for ≥ MIN_PAUSE_S
+  - comparison with the planned pauses: hits, false alarms, time offset
+  - heart rate per pause (before / during / after); with raw PPG also the breathing modulation of the pulse wave
 
     python breath_hold.py ../sessions/<session> --plot
 """
@@ -49,7 +49,7 @@ def find_marker(events, grid, explicit, min_quiet_s=60):
 
 
 def resp_envelope(xyz, mask, fs, band=RESP_BAND, order=2):
-    """Atemkomponente und normierte Amplitude innerhalb der Maske (Rest NaN)."""
+    """Breathing component and normalised amplitude inside the mask (rest NaN)."""
     sos = signal.butter(order, band, btype="band", fs=fs, output="sos")
     seg = np.nan_to_num(xyz[mask] - np.nanmean(xyz[mask], axis=0))
     filt = signal.sosfiltfilt(sos, seg, axis=0)
@@ -95,7 +95,7 @@ def match(planned, found, tol_s=10):
 
 
 def load_ppg(session, grid, fs_out=FS):
-    """Rohe PPG-Kanäle auf das Raster bringen (nur Kanäle mit Pulswelle). None, wenn nicht vorhanden."""
+    """Bring raw PPG channels onto the grid (only channels with a pulse wave). None if not present."""
     p = session / "raw_ppg.csv"
     if not p.exists():
         return None, None
@@ -126,7 +126,7 @@ def load_ppg(session, grid, fs_out=FS):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("session", type=Path)
-    ap.add_argument("--marker", help="Zeitmarke HH:MM:SS statt automatischer Erkennung")
+    ap.add_argument("--marker", help="time marker HH:MM:SS instead of automatic detection")
     ap.add_argument("--first-s", type=float, default=30)
     ap.add_argument("--hold-s", type=float, default=20)
     ap.add_argument("--cycle-s", type=float, default=60)
@@ -142,26 +142,26 @@ def main():
 
     marker = find_marker(events, grid, args.marker)
     if marker is None:
-        raise SystemExit("Keine Zeitmarke (Schütteln) gefunden – mit --marker HH:MM:SS angeben.")
+        raise SystemExit("No time marker (shake) found – pass one with --marker HH:MM:SS.")
     plan = schedule(marker, args.first_s, args.hold_s, args.cycle_s, args.holds)
     test_a = plan[0][0] - 25_000
-    test_b = plan[-1][1] + 25_000   # vor dem End-Schütteln aufhören
+    test_b = plan[-1][1] + 25_000   # stop before the final shake
     fmt = lambda ms: pd.to_datetime(ms, unit="ms", utc=True).tz_convert(TZ).strftime("%H:%M:%S")
-    lines = [f"Zeitmarke: {fmt(marker)}  →  geplante Pausen ab " + ", ".join(fmt(a) for a, _ in plan)]
+    lines = [f"Time marker: {fmt(marker)}  →  planned pauses from " + ", ".join(fmt(a) for a, _ in plan)]
 
     moving = [(e.start_ms, e.end_ms) for e in events.itertuples() if test_a <= e.start_ms <= test_b]
     if moving:
-        lines.append("Bewegung während des Tests (stört die Auswertung): " +
+        lines.append("Movement during the test (disturbs the analysis): " +
                      ", ".join(f"{fmt(a)} ({(b - a) / 1000:.0f} s)" for a, b in moving))
 
-    # Grundlinie: ruhige Phase vor der Zeitmarke
+    # baseline: resting phase before the time marker
     base = (grid > grid[0] + 15_000) & (grid < marker - 5_000)
     for name, xyz in sources.items():
         if base.sum() > 60 * FS:
             sos = signal.butter(2, (0.1, 0.5), btype="band", fs=FS, output="sos")
             seg = signal.sosfiltfilt(sos, np.nan_to_num(xyz[base] - np.nanmean(xyz[base], axis=0)), axis=0)
             rate, q = autocorr_rate(principal_component(seg), FS)
-            lines.append(f"Ruhephase {name}: {rate:.1f} Atemzüge/min (Qualität {q:.2f})")
+            lines.append(f"Resting phase {name}: {rate:.1f} breaths/min (quality {q:.2f})")
 
     test = (grid >= test_a) & (grid <= test_b)
     results, traces = {}, {}
@@ -176,15 +176,15 @@ def main():
             in_hold |= (grid >= a + 3000) & (grid <= b - 3000)
         ratio = np.nanmedian(env[in_hold]) / np.nanmedian(env[test & ~in_hold])
         n_hit = hits.found_start.notna().sum()
-        lines.append(f"{name}: {n_hit}/{len(plan)} Pausen erkannt, {len(fa)} Fehlalarme, "
-                     f"Amplitude in Pausen = {ratio * 100:.0f} % vom Atmen"
-                     + (f", Versatz {hits.offset_s.median():+.1f} s" if n_hit else ""))
+        lines.append(f"{name}: {n_hit}/{len(plan)} pauses detected, {len(fa)} false alarms, "
+                     f"amplitude in pauses = {ratio * 100:.0f} % of breathing"
+                     + (f", offset {hits.offset_s.median():+.1f} s" if n_hit else ""))
 
     ppg, ppg_fs = load_ppg(args.session, grid)
     if ppg:
-        lines.append(f"PPG: {len(ppg)} Kanal/Kanäle mit Pulswelle, {ppg_fs:.0f} Hz")
+        lines.append(f"PPG: {len(ppg)} channel(s) with a pulse wave, {ppg_fs:.0f} Hz")
         for name, x in ppg.items():
-            # Pulswelle selbst (~1 Hz) muss raus, nur die langsame Atemmodulation der Grundlinie bleibt
+            # the pulse wave itself (~1 Hz) must go, only the slow breathing modulation of the baseline remains
             pc, env = resp_envelope(x[:, None], test, FS, band=(0.1, 0.45), order=4)
             traces[name] = (pc, env)
             found = detect_pauses(grid, env, FS)
@@ -194,10 +194,10 @@ def main():
             for a, b in plan:
                 in_hold |= (grid >= a + 3000) & (grid <= b - 3000)
             ratio = np.nanmedian(env[in_hold]) / np.nanmedian(env[test & ~in_hold])
-            lines.append(f"{name} (Atemmodulation der Pulswelle): {hits.found_start.notna().sum()}/{len(plan)} "
-                         f"erkannt, {len(fa)} Fehlalarme, Amplitude in Pausen {ratio * 100:.0f} %")
+            lines.append(f"{name} (breathing modulation of the pulse wave): {hits.found_start.notna().sum()}/{len(plan)} "
+                         f"detected, {len(fa)} false alarms, amplitude in pauses {ratio * 100:.0f} %")
     elif ppg_fs is not None:
-        lines.append(f"PPG: Rohdaten vorhanden, aber zu langsam ({ppg_fs:.1f} Hz) oder ohne Pulswelle")
+        lines.append(f"PPG: raw data present, but too slow ({ppg_fs:.1f} Hz) or without a pulse wave")
 
     if len(hr):
         rows = []
@@ -207,8 +207,8 @@ def main():
             after = hr[(hr.epoch_ms >= b) & (hr.epoch_ms < b + 30_000)].bpm.max()
             rows.append((pre, during.min(), during.max(), after))
         r = np.array(rows, float)
-        lines.append(f"Puls pro Pause (Mittel): vorher {np.nanmean(r[:, 0]):.0f}, während {np.nanmean(r[:, 1]):.0f}–"
-                     f"{np.nanmean(r[:, 2]):.0f}, Maximum 30 s danach {np.nanmean(r[:, 3]):.0f} bpm")
+        lines.append(f"Heart rate per pause (mean): before {np.nanmean(r[:, 0]):.0f}, during {np.nanmean(r[:, 1]):.0f}–"
+                     f"{np.nanmean(r[:, 2]):.0f}, maximum 30 s after {np.nanmean(r[:, 3]):.0f} bpm")
 
     text = "\n".join(lines)
     print(text)
@@ -226,7 +226,7 @@ def main():
         for name in names:
             pc, env = traces[name]
             axes[k].plot(t[view], pc[view], lw=0.7)
-            axes[k].set_ylabel(f"{name}\nAtembewegung", fontsize=8)
+            axes[k].set_ylabel(f"{name}\nbreathing motion", fontsize=8)
             axes[k + 1].plot(t[view], env[view], lw=1)
             axes[k + 1].axhline(PAUSE_RATIO, color="grey", lw=0.8, ls="--")
             axes[k + 1].set_ylabel("Amplitude\n(rel.)", fontsize=8)
@@ -238,13 +238,13 @@ def main():
             k += 2
         hv = hr[(hr.epoch_ms >= grid[view][0]) & (hr.epoch_ms <= grid[view][-1])]
         axes[k].plot(hv.t.dt.tz_localize(None), hv.bpm, lw=1)
-        axes[k].set_ylabel("Puls", fontsize=8)
+        axes[k].set_ylabel("Heart rate", fontsize=8)
         for ax in axes:
             for a, b in plan:
                 ax.axvspan(pd.to_datetime(a, unit="ms", utc=True).tz_convert(TZ).tz_localize(None),
                            pd.to_datetime(b, unit="ms", utc=True).tz_convert(TZ).tz_localize(None),
                            color="tab:red", alpha=0.12)
-        axes[0].set_title("rot = geplante Pause, grün = erkannte Pause", fontsize=9)
+        axes[0].set_title("red = planned pause, green = detected pause", fontsize=9)
         fig.tight_layout()
         out = args.session / "breath_hold.png"
         fig.savefig(out, dpi=110)

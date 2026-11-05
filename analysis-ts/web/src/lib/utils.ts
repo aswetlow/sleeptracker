@@ -8,4 +8,4 @@ export function cn(...inputs: ClassValue[]) {
 export const fmt = (v: number | null | undefined, d = 0) => (v == null || !Number.isFinite(v) ? "–" : v.toFixed(d));
 
 export const clock = (t: number) =>
-  new Date(t).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  new Date(t).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit" });

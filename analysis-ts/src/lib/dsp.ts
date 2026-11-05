@@ -1,11 +1,11 @@
 /**
- * Signalverarbeitung ohne Abhängigkeiten, nachgebaut nach scipy.signal:
- * butter (Bandpass, SOS), sosfilt, sosfiltfilt, find_peaks (distance/prominence/wlen),
- * peak_prominences, Welch-Leistung für einzelne Frequenzen, Autokorrelation.
- * Ziel: dieselben Zahlen wie die Python-Skripte (bis auf Rundung im Bereich 1e-9).
+ * Dependency-free signal processing, modelled on scipy.signal:
+ * butter (band-pass, SOS), sosfilt, sosfiltfilt, find_peaks (distance/prominence/wlen),
+ * peak_prominences, Welch power for selected frequencies, autocorrelation.
+ * Goal: the same numbers as the Python scripts (up to rounding around 1e-9).
  */
 
-export type Sos = number[][]; // je Abschnitt [b0, b1, b2, a0, a1, a2]
+export type Sos = number[][]; // per section [b0, b1, b2, a0, a1, a2]
 
 type C = { re: number; im: number };
 const c = (re: number, im = 0): C => ({ re, im });
@@ -23,20 +23,20 @@ const csqrt = (a: C): C => {
   return c(re, a.im === 0 && a.re >= 0 ? 0 : im);
 };
 
-/** Butterworth-Bandpass der Ordnung n (wie scipy.signal.butter(n, (lo, hi), "band", fs=fs, output="sos")). */
+/** Butterworth band-pass of order n (like scipy.signal.butter(n, (lo, hi), "band", fs=fs, output="sos")). */
 export function butterBandpass(n: number, lo: number, hi: number, fs: number): Sos {
-  // analoger Tiefpass-Prototyp
+  // analog low-pass prototype
   const proto: C[] = [];
   for (let m = -n + 1; m < n; m += 2) {
     const ang = (Math.PI * m) / (2 * n);
     proto.push(c(-Math.cos(ang), -Math.sin(ang)));
   }
-  // Vorverzerrung (bilinear, fs_norm = 2)
+  // pre-warping (bilinear, fs_norm = 2)
   const w1 = 4 * Math.tan((Math.PI * (2 * lo) / fs) / 2);
   const w2 = 4 * Math.tan((Math.PI * (2 * hi) / fs) / 2);
   const bw = w2 - w1;
   const wo = Math.sqrt(w1 * w2);
-  // Tiefpass -> Bandpass
+  // low-pass -> band-pass
   const poles: C[] = [];
   for (const p of proto) {
     const pl = mul(p, c(bw / 2));
@@ -47,7 +47,7 @@ export function butterBandpass(n: number, lo: number, hi: number, fs: number): S
   // bilinear: s -> z, fs2 = 4
   const fs2 = 4;
   const zp = poles.map((p) => div(add(c(fs2), p), sub(c(fs2), p)));
-  // Nullstellen: n bei s = 0 (z = +1) und n bei z = -1
+  // zeros: n at s = 0 (z = +1) and n at z = -1
   let num = c(1), den = c(1);
   for (let i = 0; i < n; i++) num = mul(num, c(fs2)); // prod(fs2 - 0)
   for (const p of poles) den = mul(den, sub(c(fs2), p));
@@ -55,7 +55,7 @@ export function butterBandpass(n: number, lo: number, hi: number, fs: number): S
   return polesToSos(zp, k, n);
 }
 
-/** Pole paaren (konjugiert komplex bzw. zwei reelle) und je Abschnitt eine Nullstelle bei +1 und -1. */
+/** Pair poles (complex conjugate or two real ones), one zero at +1 and -1 per section. */
 function polesToSos(zp: C[], k: number, n: number): Sos {
   const eps = 1e-10;
   const cplx = zp.filter((p) => p.im > eps);
@@ -66,19 +66,19 @@ function polesToSos(zp: C[], k: number, n: number): Sos {
     const a = real[i], b = real[i + 1] ?? 0;
     den.push(i + 1 < real.length ? [1, -(a + b), a * b] : [1, -a, 0]);
   }
-  // nach Polbetrag sortieren (wie scipy: Pole nahe dem Einheitskreis zuletzt)
+  // sort by pole magnitude (like scipy: poles near the unit circle last)
   den.sort((x, y) => x[2] - y[2]);
   if (den.length !== n) throw new Error("unerwartete Polzahl");
   return den.map((a, i) => [i === 0 ? k : 1, 0, i === 0 ? -k : -1, ...a]);
 }
 
-/** Butterworth-Tiefpass/Hochpass brauchen die Skripte nicht. */
+/** The scripts do not need Butterworth low-pass/high-pass. */
 
-/** Anfangszustand für Sprungantwort-Gleichgewicht (scipy.signal.sosfilt_zi). */
+/** Initial state for step-response steady state (scipy.signal.sosfilt_zi). */
 export function sosfiltZi(sos: Sos): number[][] {
   let scale = 1;
   return sos.map(([b0, b1, b2, , a1, a2]) => {
-    // lfilter_zi für Abschnitt 2. Ordnung: (I - A^T) zi = B
+    // lfilter_zi for a second-order section: (I - A^T) zi = B
     const B0 = b1 - a1 * b0, B1 = b2 - a2 * b0;
     // [[1 + a1, -1], [a2, 1]] · zi = B
     const det = (1 + a1) * 1 - (-1) * a2;
@@ -90,7 +90,7 @@ export function sosfiltZi(sos: Sos): number[][] {
   });
 }
 
-/** Kausaler Filter (Direktform II transponiert), optional mit Anfangszustand. */
+/** Causal filter (direct form II transposed), optionally with initial state. */
 export function sosfilt(sos: Sos, x: ArrayLike<number>, zi?: number[][]): Float64Array {
   const y = Float64Array.from(x as ArrayLike<number>);
   for (let s = 0; s < sos.length; s++) {
@@ -107,12 +107,12 @@ export function sosfilt(sos: Sos, x: ArrayLike<number>, zi?: number[][]): Float6
   return y;
 }
 
-/** Nullphasig vor/zurück (scipy.signal.sosfiltfilt, padtype "odd"). */
+/** Zero-phase forward/backward (scipy.signal.sosfiltfilt, padtype "odd"). */
 export function sosfiltfilt(sos: Sos, x: ArrayLike<number>): Float64Array {
   const n = x.length;
   let pad = 3 * (2 * sos.length + 1);
   pad = Math.min(pad, n - 1);
-  if (n <= pad || n < 2) throw new Error(`Signal zu kurz für sosfiltfilt (${n} Werte)`);
+  if (n <= pad || n < 2) throw new Error(`signal too short for sosfiltfilt (${n} values)`);
   const ext = new Float64Array(n + 2 * pad);
   for (let i = 0; i < pad; i++) ext[i] = 2 * x[0] - x[pad - i];
   for (let i = 0; i < n; i++) ext[pad + i] = x[i];
@@ -126,7 +126,7 @@ export function sosfiltfilt(sos: Sos, x: ArrayLike<number>): Float64Array {
   return y.slice(pad, pad + n);
 }
 
-/** Lokale Maxima mit Plateau-Mitte (scipy _local_maxima_1d). */
+/** Local maxima with plateau middle (scipy _local_maxima_1d). */
 export function localMaxima(x: ArrayLike<number>): number[] {
   const out: number[] = [];
   const n = x.length;
@@ -145,7 +145,7 @@ export function localMaxima(x: ArrayLike<number>): number[] {
   return out;
 }
 
-/** Prominenz je Peak (scipy.signal.peak_prominences); wlen < 2 = ganzes Signal. */
+/** Prominence per peak (scipy.signal.peak_prominences); wlen < 2 = whole signal. */
 export function peakProminences(x: ArrayLike<number>, peaks: number[], wlen = -1): Float64Array {
   const n = x.length;
   const w = wlen > 1 ? Math.ceil(wlen) : -1;
@@ -175,13 +175,13 @@ export function peakProminences(x: ArrayLike<number>, peaks: number[], wlen = -1
 
 export interface PeakOpts { distance?: number; prominence?: number; wlen?: number }
 
-/** scipy.signal.find_peaks mit distance, prominence (Untergrenze) und wlen. */
+/** scipy.signal.find_peaks with distance, prominence (lower bound) and wlen. */
 export function findPeaks(x: ArrayLike<number>, opts: PeakOpts = {}): { peaks: number[]; prominences: Float64Array } {
   let peaks = localMaxima(x);
   if (opts.distance !== undefined && opts.distance > 1 && peaks.length > 1) {
     const d = opts.distance;
     const keep = new Uint8Array(peaks.length).fill(1);
-    // Gleichstand: der frühere Peak gewinnt (so verhält sich numpy in der Praxis meist; argsort ist dort nicht stabil)
+    // tie: the earlier peak wins (numpy usually behaves this way in practice; its argsort is not stable)
     const order = peaks.map((_, i) => i).sort((a, b) => x[peaks[a]] - x[peaks[b]] || b - a);
     for (let o = order.length - 1; o >= 0; o--) {
       const j = order[o];
@@ -201,7 +201,7 @@ export function findPeaks(x: ArrayLike<number>, opts: PeakOpts = {}): { peaks: n
   return { peaks, prominences };
 }
 
-/** Autokorrelation (np.correlate(z, z, "full")[n-1:] / n) für Verschiebungen 0 … maxLag. */
+/** Autocorrelation (np.correlate(z, z, "full")[n-1:] / n) for lags 0 … maxLag. */
 export function autocorr(z: ArrayLike<number>, maxLag: number): Float64Array {
   const n = z.length;
   const out = new Float64Array(Math.min(maxLag, n - 1) + 1);
@@ -214,8 +214,8 @@ export function autocorr(z: ArrayLike<number>, maxLag: number): Float64Array {
 }
 
 /**
- * Welch-Leistungsdichte (Hann, 50 % Überlappung, Mittelwert je Segment abgezogen) nur für die
- * Frequenz-Bins kLo … kHi. Absolute Skalierung weggelassen, Verhältnisse stimmen mit scipy überein.
+ * Welch power density (Hann, 50 % overlap, mean removed per segment) only for the
+ * frequency bins kLo … kHi. Absolute scaling omitted; ratios match scipy.
  */
 export function welchBins(y: ArrayLike<number>, nperseg: number, kLo: number, kHi: number): Float64Array {
   const step = nperseg >> 1;
@@ -252,7 +252,7 @@ export function welchBins(y: ArrayLike<number>, nperseg: number, kLo: number, kH
   return acc;
 }
 
-/** Eigenvektor zum größten Eigenwert einer symmetrischen 3×3-Matrix (Jacobi-Verfahren). */
+/** Eigenvector of the largest eigenvalue of a symmetric 3×3 matrix (Jacobi method). */
 export function topEigenvector3(m: number[][]): number[] {
   const a = m.map((r) => r.slice());
   const v = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
@@ -283,7 +283,7 @@ export function topEigenvector3(m: number[][]): number[] {
   return [v[0][best], v[1][best], v[2][best]];
 }
 
-/** Hauptkomponente mehrerer gleich langer Spalten (Kovarianz mit ddof=1, wie np.cov). */
+/** Principal component of several equally long columns (covariance with ddof=1, like np.cov). */
 export function principalComponent(cols: Float64Array[]): Float64Array {
   const n = cols[0].length, d = cols.length;
   const cen = cols.map((col) => {
