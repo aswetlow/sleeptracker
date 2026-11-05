@@ -18,6 +18,9 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
 import android.os.PowerManager
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import android.os.SystemClock
 import android.util.Log
 import java.io.BufferedWriter
@@ -38,6 +41,10 @@ class SensorLoggerService : Service(), SensorEventListener {
         const val EXTRA_RAW = "raw"
         const val ACTION_MARK = "de.alex.sleeplogger.MARK"
         const val EXTRA_TIME = "time"
+        // position calibration: "pose <label>" in events.csv, then lie still until the watch vibrates
+        const val ACTION_POSE = "de.alex.sleeplogger.POSE"
+        const val EXTRA_POSE = "pose"
+        const val POSE_HOLD_MS = 25_000L            // position.py uses 5–25 s after the tap
         // Undocumented Google sensors of the Pixel Watch (see `adb shell dumpsys sensorservice`).
         // Format unknown, hence raw: epoch_ms,accuracy,n,v0 v1 ... v(n-1)
         val RAW_SENSORS = linkedMapOf(
@@ -67,6 +74,13 @@ class SensorLoggerService : Service(), SensorEventListener {
         @Volatile var startedAtMs = 0L
             private set
         @Volatile var liveConnected = false
+            private set
+        /** calibration taps per position in this recording */
+        val poseCounts = java.util.concurrent.ConcurrentHashMap<String, Int>()
+        /** end of the current calibration hold (epoch ms), 0 = none */
+        @Volatile var poseHoldUntilMs = 0L
+            private set
+        @Volatile var poseHoldLabel = ""
             private set
     }
 
@@ -111,6 +125,15 @@ class SensorLoggerService : Service(), SensorEventListener {
         }
     }
 
+    // end of a calibration hold: short double buzz = "done, next arm placement or position"
+    // (poseHoldUntilMs stays set: the UI keeps the screen on for 2 min after it, for the next tap)
+    private val poseDone = Runnable {
+        val vib = if (Build.VERSION.SDK_INT >= 31)
+            getSystemService(VibratorManager::class.java)?.defaultVibrator
+        else getSystemService(Vibrator::class.java)
+        vib?.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 150, 120, 150), -1))
+    }
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -124,6 +147,21 @@ class SensorLoggerService : Service(), SensorEventListener {
             if (isRunning) handler.post { logEvent("felt", at); markCount++; live?.send("e,$at,felt\n") }
             else stopSelf()
             return if (isRunning) START_STICKY else START_NOT_STICKY
+        }
+        if (intent?.action == ACTION_POSE) {
+            val at = intent.getLongExtra(EXTRA_TIME, System.currentTimeMillis())
+            val label = intent.getStringExtra(EXTRA_POSE) ?: "unknown"
+            if (!isRunning) { stopSelf(); return START_NOT_STICKY }
+            handler.post {
+                logEvent("pose $label", at)
+                live?.send("e,$at,pose $label\n")
+                poseCounts.merge(label, 1) { a, b -> a + b }
+                poseHoldLabel = label
+                poseHoldUntilMs = at + POSE_HOLD_MS
+                handler.removeCallbacks(poseDone)
+                handler.postDelayed(poseDone, at + POSE_HOLD_MS - System.currentTimeMillis())
+            }
+            return START_STICKY
         }
         if (isRunning) return START_STICKY
 
@@ -150,6 +188,7 @@ class SensorLoggerService : Service(), SensorEventListener {
         hrOut = File(dir, "hr.csv").bufferedWriter().apply { write("epoch_ms,bpm,accuracy\n") }
         eventsOut = File(dir, "events.csv").bufferedWriter().apply { write("epoch_ms,event\n") }
         accelCount = 0; rawCount = 0; markCount = 0; rawMode = raw
+        poseCounts.clear(); poseHoldUntilMs = 0L
         startedAtMs = System.currentTimeMillis()
 
         // record all sensors with metadata; costs nothing and helps reverse engineering.
@@ -254,6 +293,8 @@ class SensorLoggerService : Service(), SensorEventListener {
             handler.removeCallbacks(flushRunnable)
             handler.removeCallbacks(batteryRunnable)
             handler.removeCallbacks(liveRunnable)
+            handler.removeCallbacks(poseDone)
+            poseHoldUntilMs = 0L
             live?.stop(); live = null; liveConnected = false
             // finish writing on the writer thread so no lines are lost.
             handler.post {
