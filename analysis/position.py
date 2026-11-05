@@ -180,7 +180,7 @@ def classify_session(session: Path, model_path: Path):
     have = {(t["source"], t["epoch_ms"]) for t in model["templates"]}
     templates = model["templates"] + [t for t in own if (t["source"], t["epoch_ms"]) not in have]
     if len({t["label"] for t in templates}) < 2:
-        sys.exit("Fewer than 2 calibrated positions. Calibrate first (see README, section 8).")
+        sys.exit("Fewer than 2 calibrated positions. Calibrate first (see README, section 11).")
     seg, events = still_segments(session)
     lab, ang, margin = classify_vectors(seg[["x", "y", "z"]].values, templates)
     seg["position"] = lab

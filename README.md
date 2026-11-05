@@ -233,12 +233,15 @@ npm run live -- --serial 192.168.178.35:<port>  # like live.py, title "SleepLogg
 npm run live -- --demo
 npm run ui -- --demo                           # live analyzer with a React UI, same options as live
 npm run ecg -- ..\sessions\<session>           # ECG test report (section 10)
+npm run position -- classify ..\sessions\<session> --plot   # like position.py (section 11), plot as SVG
 npm test                                       # DSP against scipy reference values
 ```
 Checked against Python: `summary.txt` character-identical on three nights, `ppg_summary.txt` identical on the
 test session and a PPG night (candidates, HRV). The only known difference: in flat signal stretches
 (PPG LED off) Python finds a few hundred spurious beats with amplitude ~1e-9 (numerical noise),
 TypeScript fewer. That only changes the beat count, nothing about HRV or candidates.
+`position.ts` (calibrate / classify / validate) uses the same `analysis/pose_model.json` as Python, so you can
+calibrate with one and classify with the other; on a synthetic night with phone reference all outputs were identical.
 Not ported yet: plots (`--plot`), `audio.py`, `breath_hold.py`, `nights.py`, `ppg_probe.py`, `simulate.py`.
 
 ## 10. ECG test (experimental)
