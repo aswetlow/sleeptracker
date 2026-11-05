@@ -8,11 +8,13 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
+import android.view.View
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 
@@ -24,7 +26,11 @@ class MainActivity : ComponentActivity() {
     private lateinit var markButton: Button
     private lateinit var poseHeader: TextView
     private val poseButtons = LinkedHashMap<String, Button>()
-    private var startRaw = false
+    private lateinit var ecgButton: Button
+    private var pendingMode = Mode.NORMAL
+    private var shownEcgResult: String? = null
+
+    private enum class Mode { NORMAL, RAW, ECG }
     private val ui = Handler(Looper.getMainLooper())
 
     private val requiredPermissions: Array<String>
@@ -36,14 +42,15 @@ class MainActivity : ComponentActivity() {
 
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
-            if (result.values.all { it }) startLogger(startRaw)
+            if (result.values.all { it }) startLogger(pendingMode)
             else status.text = "Permission missing.\nAllow it in Settings › Apps."
         }
 
     private val refresh = object : Runnable {
         override fun run() {
             render()
-            ui.postDelayed(this, 1000)
+            // faster during the ECG test so the event counter and countdown move smoothly
+            ui.postDelayed(this, if (SensorLoggerService.isRunning && SensorLoggerService.ecgMode) 250 else 1000)
         }
     }
 
@@ -51,9 +58,11 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         val dm = resources.displayMetrics
         status = TextView(this).apply { gravity = Gravity.CENTER; textSize = 12f; setPadding(0, 8, 0, 8) }
-        toggle = Button(this).apply { setOnClickListener { onToggle(false) } }
+        toggle = Button(this).apply { setOnClickListener { onToggle(Mode.NORMAL) } }
         // additionally record the raw PPG sensors (first as a short test, data volume unknown)
-        rawButton = Button(this).apply { text = "Start + PPG"; setOnClickListener { onToggle(true) } }
+        rawButton = Button(this).apply { text = "Start + PPG"; setOnClickListener { onToggle(Mode.RAW) } }
+        // experimental: 60 s with the undocumented ECG sensors, finger of the other hand on the crown
+        ecgButton = Button(this).apply { text = "ECG test"; setOnClickListener { onToggle(Mode.ECG) } }
         // ectopic beat felt -> time marker in events.csv ("felt"), as a reference for ppg.py
         markButton = Button(this).apply {
             text = "Felt"
@@ -97,6 +106,8 @@ class MainActivity : ComponentActivity() {
                 LinearLayout.LayoutParams.WRAP_CONTENT))
             addView(rawButton, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT))
+            addView(ecgButton, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT))
             addView(poseHeader)
             poseButtons.values.forEach {
                 addView(it, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
@@ -116,32 +127,47 @@ class MainActivity : ComponentActivity() {
     override fun onResume() { super.onResume(); ui.post(refresh) }
     override fun onPause() { super.onPause(); ui.removeCallbacks(refresh) }
 
-    private fun onToggle(raw: Boolean) {
-        startRaw = raw
+    private fun onToggle(mode: Mode) {
+        pendingMode = mode
         if (SensorLoggerService.isRunning) {
             startService(Intent(this, SensorLoggerService::class.java)
                 .setAction(SensorLoggerService.ACTION_STOP))
         } else if (requiredPermissions.all { checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }) {
-            startLogger(raw)
+            startLogger(mode)
         } else {
             permissionLauncher.launch(requiredPermissions)
         }
     }
 
-    private fun startLogger(raw: Boolean) {
+    private fun startLogger(mode: Mode) {
         startForegroundService(Intent(this, SensorLoggerService::class.java)
-            .putExtra(SensorLoggerService.EXTRA_RAW, raw))
+            .putExtra(SensorLoggerService.EXTRA_RAW, mode == Mode.RAW)
+            .putExtra(SensorLoggerService.EXTRA_ECG_TEST, mode == Mode.ECG))
     }
 
     private fun render() {
-        if (SensorLoggerService.isRunning) {
+        if (SensorLoggerService.isRunning && SensorLoggerService.ecgMode) {
+            val left = ((SensorLoggerService.ecgEndsAtMs - System.currentTimeMillis()) / 1000).coerceAtLeast(0)
+            status.text = "Finger on the crown\n$left s · ECG ${SensorLoggerService.ecgCount}\n" +
+                "lead ${SensorLoggerService.ecgLeadLast}" +
+                (if (SensorLoggerService.liveConnected) " · Live ✓" else "")
+            toggle.text = "Stop"
+            shownEcgResult = null   // so the result of this test is shown/toasted
+            rawButton.visibility = View.GONE
+            ecgButton.visibility = View.GONE
+            markButton.visibility = View.GONE
+            poseHeader.visibility = View.GONE
+            poseButtons.values.forEach { it.visibility = View.GONE }
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else if (SensorLoggerService.isRunning) {
             // keep it short so "Felt" and "Stop" fit on the screen without scrolling
             status.text = "${SensorLoggerService.lastBpm.toInt()} bpm · felt ${SensorLoggerService.markCount}\n" +
                 (if (SensorLoggerService.rawMode) "PPG ${SensorLoggerService.rawCount / 1000}k" else "no PPG") +
                 (if (SensorLoggerService.liveConnected) " · Live ✓" else "")
             toggle.text = "Stop"
-            rawButton.visibility = android.view.View.GONE
-            markButton.visibility = android.view.View.VISIBLE
+            rawButton.visibility = View.GONE
+            ecgButton.visibility = View.GONE
+            markButton.visibility = View.VISIBLE
             val now = System.currentTimeMillis()
             val holdLeft = (SensorLoggerService.poseHoldUntilMs - now) / 1000
             poseHeader.text = if (holdLeft > 0) "Keep still: ${SensorLoggerService.poseHoldLabel} ${holdLeft} s"
@@ -149,9 +175,9 @@ class MainActivity : ComponentActivity() {
             for ((label, b) in poseButtons) {
                 val n = SensorLoggerService.poseCounts[label] ?: 0
                 b.text = label.replaceFirstChar { it.uppercase() } + if (n > 0) " ($n)" else ""
-                b.visibility = android.view.View.VISIBLE
+                b.visibility = View.VISIBLE
             }
-            poseHeader.visibility = android.view.View.VISIBLE
+            poseHeader.visibility = View.VISIBLE
             // In the PPG test keep the screen on for the first 20 min so "Felt" takes a single tap.
             // After that (e.g. PPG overnight) let it turn off normally again.
             // During position calibration keep it on until 2 min after the last hold, for the next tap.
@@ -161,12 +187,18 @@ class MainActivity : ComponentActivity() {
             if (keepOn) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         } else {
-            status.text = "Ready"
+            val ecgResult = SensorLoggerService.ecgResult
+            status.text = if (ecgResult != null) "Ready\n$ecgResult" else "Ready"
+            if (ecgResult != null && ecgResult != shownEcgResult) {
+                shownEcgResult = ecgResult
+                if (SensorLoggerService.ecgBlocked) Toast.makeText(this, ecgResult, Toast.LENGTH_LONG).show()
+            }
             toggle.text = "Start"
-            rawButton.visibility = android.view.View.VISIBLE
-            markButton.visibility = android.view.View.GONE
-            poseHeader.visibility = android.view.View.GONE
-            poseButtons.values.forEach { it.visibility = android.view.View.GONE }
+            rawButton.visibility = View.VISIBLE
+            ecgButton.visibility = View.VISIBLE
+            markButton.visibility = View.GONE
+            poseHeader.visibility = View.GONE
+            poseButtons.values.forEach { it.visibility = View.GONE }
             window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         }
     }

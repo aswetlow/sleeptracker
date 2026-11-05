@@ -15,6 +15,7 @@ import java.util.concurrent.TimeUnit
  *   a,epoch_ms,x,y,z   accelerometer      g,epoch_ms,x,y,z   gyroscope
  *   h,epoch_ms,bpm     heart rate         p,epoch_ms,v0 v1 … raw PPG
  *   e,epoch_ms,text    event (e.g. felt)                      k  keepalive
+ *   c,epoch_ms,v0 v1 … raw ECG (ECG test)  l,epoch_ms,v0 …     ECG lead detector
  */
 class LiveStream(private val port: Int = 9000) {
     private val queue = LinkedBlockingQueue<String>(20_000)

@@ -1,0 +1,368 @@
+/**
+ * ECG test (experimental): first look at the undocumented ECG sensors of the Pixel Watch
+ * (raw_ecg.csv, raw_ecg_lead.csv from the "ECG test" button), compared with hr.csv and raw_ppg.csv.
+ *
+ *     npx tsx src/ecg_probe.ts ../sessions/<session>
+ *
+ * Prints/writes: events, sample rate, values per event, statistics per channel, lead detector history.
+ * If a channel looks like an ECG: band-pass 0.5–40 Hz, R peaks, heart rate and RR intervals,
+ * comparison with the heart-rate sensor and the PPG beats (via ppg.ts). Outputs ecg_summary.txt,
+ * ecg_beats.csv and ecg_probe.svg (10-s snippet raw + filtered with R peaks, RR over time, lead detector).
+ * The live analyzer shows the same report under "ECG test".
+ *
+ * Not a medical device, no diagnosis. Without the vendor's validation this only answers
+ * "does a third-party app get usable raw data?".
+ */
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { basename, join } from "node:path";
+import { butterBandpass, findPeaks, sosfiltfilt } from "./lib/dsp.ts";
+import { f, hms, readEvents, writeCsv } from "./lib/io.ts";
+import { mean, median, std } from "./lib/stats.ts";
+import { analyse as analysePpg, bandpass as ppgBandpass, loadPpg, pickChannel } from "./ppg.ts";
+
+const ECG_BAND: [number, number] = [0.5, 40];
+const RR_MIN = 300, RR_MAX = 2000;
+
+// ---------- reading ----------
+
+export interface RawFile { t: number[]; accuracy: number[]; n: number[]; vals: number[][] }
+
+/** epoch_ms,accuracy,n,"v0 v1 …" – all rows, in file order (no de-duplication; the stats report duplicates). */
+export function loadRaw(path: string): RawFile | null {
+  if (!existsSync(path)) return null;
+  const out: RawFile = { t: [], accuracy: [], n: [], vals: [] };
+  const lines = readFileSync(path, "latin1").split("\n");
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    const c1 = line.indexOf(","), c2 = line.indexOf(",", c1 + 1), c3 = line.indexOf(",", c2 + 1);
+    if (c3 < 0) continue;
+    out.t.push(Number(line.slice(0, c1)));
+    out.accuracy.push(Number(line.slice(c1 + 1, c2)));
+    out.n.push(Number(line.slice(c2 + 1, c3)));
+    out.vals.push(line.slice(c3 + 1).trim().split(/\s+/).map(Number));
+  }
+  return out;
+}
+
+export interface FileStats {
+  events: number; durationS: number; eventRateHz: number; duplicatePct: number;
+  valuesPerEvent: Record<string, number>; accuracy: Record<string, number>; firstMs: number | null; lastMs: number | null;
+}
+
+const countBy = (a: number[]) => a.reduce<Record<string, number>>((m, v) => { m[v] = (m[v] ?? 0) + 1; return m; }, {});
+
+function fileStats(r: RawFile): FileStats {
+  const n = r.t.length;
+  const dt = r.t.slice(1).map((t, i) => t - r.t[i]);
+  const pos = dt.filter((d) => d > 0);
+  return {
+    events: n,
+    durationS: n > 1 ? (r.t[n - 1] - r.t[0]) / 1000 : 0,
+    eventRateHz: n > 1 && r.t[n - 1] > r.t[0] ? ((n - 1) * 1000) / (r.t[n - 1] - r.t[0]) : 0,
+    duplicatePct: dt.length ? (100 * (dt.length - pos.length)) / dt.length : 0,
+    valuesPerEvent: countBy(r.n), accuracy: countBy(r.accuracy),
+    firstMs: n ? r.t[0] : null, lastMs: n ? r.t[n - 1] : null,
+  };
+}
+
+export interface ChannelStats { name: string; mean: number; std: number; min: number; max: number; unique: number }
+
+/** One column per value position; trailing values cut off by the app were zeros, so missing = 0. */
+function columns(r: RawFile): number[][] {
+  const width = Math.max(0, ...r.vals.map((v) => v.length));
+  return Array.from({ length: width }, (_, c) => r.vals.map((v) => (c < v.length ? v[c] : 0)));
+}
+
+function channelStats(name: string, x: number[]): ChannelStats {
+  let lo = Infinity, hi = -Infinity;
+  for (const v of x) { if (v < lo) lo = v; if (v > hi) hi = v; }
+  return { name, mean: mean(x), std: std(x, 1), min: lo, max: hi, unique: new Set(x).size };
+}
+
+// ---------- ECG detection ----------
+
+export interface RDetect {
+  fs: number; filt: Float64Array; peaks: number[]; rr: number[]; plausible: number;
+  hr: number | null; looksEcg: boolean; score: number; why: string;
+}
+
+const pct = (x: ArrayLike<number>, q: number) => {
+  const s = Array.from(x).filter(Number.isFinite).sort((a, b) => a - b);
+  return s.length ? s[Math.min(s.length - 1, Math.max(0, Math.round(q * (s.length - 1))))] : NaN;
+};
+
+/**
+ * Band-pass 0.5–40 Hz (upper edge limited to 0.45·fs), polarity so that R points up,
+ * peaks at least 0.3 s apart with a prominence of ≥ 40 % of the robust amplitude.
+ * "Looks like ECG": ≥ 8 beats, ≥ 80 % of RR intervals in 300–2000 ms, successive RR changes < 20 % (median).
+ */
+export function detectR(x: ArrayLike<number>, fs: number): RDetect {
+  const empty = (why: string): RDetect => ({ fs, filt: new Float64Array(0), peaks: [], rr: [], plausible: 0, hr: null, looksEcg: false, score: 0, why });
+  if (!(fs >= 50)) return empty(`sample rate ${f(fs, 1)} Hz is too low for an ECG`);
+  if (x.length < fs * 4) return empty("less than 4 s of data");
+  const m = mean(x);
+  if (std(x, 0) === 0) return empty("constant signal");
+  let y: Float64Array;
+  try {
+    y = sosfiltfilt(butterBandpass(2, ECG_BAND[0], Math.min(ECG_BAND[1], 0.45 * fs), fs), Array.from(x, (v) => v - m));
+  } catch (e) { return empty((e as Error).message); }
+  if (Math.abs(pct(y, 0.005)) > Math.abs(pct(y, 0.995))) y = y.map((v) => -v);
+  const amp = pct(y, 0.995) - median(y);
+  if (!(amp > 0)) return empty("no amplitude after filtering");
+  const { peaks } = findPeaks(y, { distance: Math.max(1, Math.trunc(0.3 * fs)), prominence: 0.4 * amp });
+  const rr = peaks.slice(1).map((p, i) => ((p - peaks[i]) * 1000) / fs);
+  const ok = rr.filter((v) => v >= RR_MIN && v <= RR_MAX);
+  const succ = ok.slice(1).map((v, i) => Math.abs(v - ok[i]) / ok[i]);
+  const stable = succ.length ? median(succ) : Infinity;
+  const plausibleShare = rr.length ? ok.length / rr.length : 0;
+  const looksEcg = peaks.length >= 8 && plausibleShare >= 0.8 && stable < 0.2;
+  const why = looksEcg ? "regular R peaks"
+    : peaks.length < 8 ? `only ${peaks.length} peaks`
+    : plausibleShare < 0.8 ? `${f(plausibleShare * 100)} % of intervals in ${RR_MIN}–${RR_MAX} ms`
+    : `intervals too irregular (median change ${f(stable * 100)} %)`;
+  return {
+    fs, filt: y, peaks, rr, plausible: ok.length, hr: ok.length >= 3 ? 60000 / median(ok) : null, looksEcg,
+    score: (looksEcg ? 1000 : 0) + ok.length * plausibleShare, why,
+  };
+}
+
+// ---------- report ----------
+
+export interface EcgReport {
+  session: string;
+  verdict: "no_file" | "blocked" | "constant" | "ecg" | "not_ecg";
+  verdictText: string;
+  lines: string[];
+  registration: string[];                 // ECG-related lines from events.csv (registerListener result etc.)
+  ecg: FileStats | null; lead: FileStats | null;
+  channels: ChannelStats[];
+  best: { label: string; fs: number; beats: number; hr: number | null; looksEcg: boolean; why: string } | null;
+  snippet: { t: number[]; raw: number[]; filt: number[]; peaks: number[] } | null;
+  rr: { t: number[]; rr: number[] };
+  hrSensor: { t: number[]; bpm: number[] };
+  ppg: { t: number[]; ibi: number[]; hr: number | null; ptt: number | null; matched: number } | null;
+  leadSeries: { t: number[]; v: number[] };
+  leadChanges: { t: number; value: string }[];
+}
+
+interface Candidate { label: string; t0: number; fs: number; x: number[]; tOf: (i: number) => number }
+
+/** Candidate signals: every column at the event rate, plus "packed" (all values in a row = consecutive samples). */
+function candidates(r: RawFile, st: FileStats): Candidate[] {
+  const out: Candidate[] = [];
+  const n = r.t.length, t0 = r.t[0], span = r.t[n - 1] - t0;
+  const fs = st.eventRateHz;
+  columns(r).forEach((x, c) => out.push({ label: `v${c}`, t0, fs, x, tOf: (i) => t0 + (i * span) / Math.max(1, n - 1) }));
+  const widths = Object.keys(st.valuesPerEvent).map(Number);
+  if (widths.length === 1 && widths[0] > 1 && fs * widths[0] <= 4000) {
+    const w = widths[0], flat = r.vals.flat();
+    out.push({ label: `packed ×${w}`, t0, fs: fs * w, x: flat, tOf: (i) => t0 + (i * span) / Math.max(1, flat.length - 1) });
+  }
+  return out;
+}
+
+export function analyzeEcg(session: string): EcgReport {
+  const rep: EcgReport = {
+    session: basename(session), verdict: "no_file", verdictText: "", lines: [], registration: [],
+    ecg: null, lead: null, channels: [], best: null, snippet: null,
+    rr: { t: [], rr: [] }, hrSensor: { t: [], bpm: [] }, ppg: null, leadSeries: { t: [], v: [] }, leadChanges: [],
+  };
+  const L = rep.lines;
+  try {
+    rep.registration = readEvents(session)
+      .filter((e) => /^(raw |raw_missing|ecg_|no_heart)/.test(e.event))
+      .map((e) => `${hms(e.t)} ${e.event}`);
+  } catch { /* no events.csv */ }
+
+  // what the app logged about the ECG sensor: missing from the sensor list, or registerListener() == false
+  const ecgReg = rep.registration.find((l) => / com\.google\.sensor\.ecg \|/.test(l));
+  const refused = ecgReg?.includes("registered=false") ?? false;
+  const missing = rep.registration.some((l) => /raw_missing com\.google\.sensor\.ecg$/.test(l));
+  const ecg = loadRaw(join(session, "raw_ecg.csv"));
+  const lead = loadRaw(join(session, "raw_ecg_lead.csv"));
+
+  // lead detector
+  if (lead && lead.t.length) {
+    rep.lead = fileStats(lead);
+    let prev = "";
+    lead.t.forEach((t, i) => {
+      const s = lead.vals[i].join(" ");
+      rep.leadSeries.t.push(t); rep.leadSeries.v.push(lead.vals[i][0]);
+      if (s !== prev) { rep.leadChanges.push({ t, value: s }); prev = s; }
+    });
+  }
+
+  if (refused || missing) {
+    rep.verdict = "blocked";
+    rep.verdictText = missing
+      ? "ECG blocked: the ECG sensor is not visible to this app (raw_missing in events.csv)."
+      : "ECG blocked: registerListener() refused the ECG sensor (registered=false) – it probably needs a permission a third-party app cannot get.";
+    if (ecg) rep.ecg = fileStats(ecg);
+  } else if (!ecg) {
+    rep.verdict = "no_file";
+    rep.verdictText = "raw_ecg.csv missing – not an ECG-test session, or the app did not log the ECG sensor (see events.csv).";
+  } else {
+    const st = rep.ecg = fileStats(ecg);
+    L.push(`ECG: ${st.events} events, ${f(st.durationS, 1)} s, rate ≈ ${f(st.eventRateHz, 1)} Hz, ` +
+      `values/event ${JSON.stringify(st.valuesPerEvent)}, accuracy ${JSON.stringify(st.accuracy)}, duplicate timestamps ${f(st.duplicatePct)} %`);
+    if (!st.events) {
+      rep.verdict = "blocked";
+      rep.verdictText = "ECG blocked? The sensor accepted the registration but delivered 0 events. A third-party app apparently gets no ECG data.";
+    } else {
+      const cols = columns(ecg);
+      rep.channels = cols.map((x, c) => channelStats(`v${c}`, x));
+      for (const c of rep.channels) L.push(`  ${c.name}: mean ${f(c.mean, 3)} std ${f(c.std, 3)} min ${f(c.min, 3)} max ${f(c.max, 3)} unique ${c.unique}`);
+      if (rep.channels.every((c) => c.unique <= 1)) {
+        rep.verdict = "constant";
+        rep.verdictText = "ECG sensor delivers events, but every value is constant – no usable signal (placeholder or blocked).";
+      } else {
+        const cands = candidates(ecg, st).filter((c) => new Set(c.x).size > 1);
+        let best: { c: Candidate; d: RDetect } | null = null;
+        for (const c of cands) {
+          const d = detectR(c.x, c.fs);
+          L.push(`  ${c.label} @ ${f(c.fs, 1)} Hz: ${d.peaks.length} peaks, ${d.why}`);
+          if (!best || d.score > best.d.score) best = { c, d };
+        }
+        if (best) {
+          const { c, d } = best;
+          rep.best = { label: c.label, fs: c.fs, beats: d.peaks.length, hr: d.hr, looksEcg: d.looksEcg, why: d.why };
+          rep.verdict = d.looksEcg ? "ecg" : "not_ecg";
+          rep.verdictText = d.looksEcg
+            ? `${c.label} looks like an ECG: ${d.peaks.length} R peaks, heart rate ${f(d.hr ?? NaN)} bpm.`
+            : `Data arrives, but no channel looks like an ECG (best: ${c.label}, ${d.why}). Finger on the crown during the whole test?`;
+          const peakT = d.peaks.map(c.tOf);
+          d.peaks.slice(1).forEach((p, i) => { rep.rr.t.push(peakT[i + 1]); rep.rr.rr.push(d.rr[i]); });
+          // 10-s snippet: the window with the most plausible RR intervals
+          const win = Math.round(10 * c.fs);
+          let s0 = Math.max(0, Math.floor((c.x.length - win) / 2)), bestN = -1;
+          for (let s = 0; s + win <= c.x.length; s += Math.max(1, Math.round(c.fs))) {
+            const nOk = d.rr.filter((v, i) => d.peaks[i] >= s && d.peaks[i + 1] < s + win && v >= RR_MIN && v <= RR_MAX).length;
+            if (nOk > bestN) { bestN = nOk; s0 = s; }
+          }
+          const s1 = Math.min(c.x.length, s0 + win);
+          const idx = Array.from({ length: s1 - s0 }, (_, k) => s0 + k);
+          rep.snippet = {
+            t: idx.map(c.tOf), raw: idx.map((i) => c.x[i]), filt: idx.map((i) => d.filt[i] ?? NaN),
+            peaks: d.peaks.filter((p) => p >= s0 && p < s1).map(c.tOf),
+          };
+        }
+      }
+    }
+  }
+
+  // heart-rate sensor in the same period
+  const tA = rep.ecg?.firstMs ?? -Infinity, tB = rep.ecg?.lastMs ?? Infinity;
+  if (existsSync(join(session, "hr.csv"))) {
+    for (const line of readFileSync(join(session, "hr.csv"), "utf8").split("\n").slice(1)) {
+      const [t, bpm] = line.split(",").map(Number);
+      if (Number.isFinite(t) && bpm > 30 && t >= tA - 5000 && t <= tB + 5000) { rep.hrSensor.t.push(t); rep.hrSensor.bpm.push(bpm); }
+    }
+  }
+
+  // PPG beats as a second reference (same rules as ppg.ts, without motion mask: the test is done sitting still)
+  if (existsSync(join(session, "raw_ppg.csv"))) {
+    try {
+      const { t, ch } = loadPpg(session);
+      if (t.length > 100 * 10) {
+        const dts = Array.from(t.slice(1), (v, i) => v - t[i]);
+        const fs = 1000 / median(dts);
+        const still = new Uint8Array(t.length).fill(1);
+        const [c] = pickChannel(ch, fs, still);
+        if (c !== null) {
+          const { beats } = analysePpg(t, ppgBandpass(ch[c], fs), fs, new Uint8Array(t.length));
+          const ok = beats.t.map((_, i) => i).filter((i) => beats.clean[i]);
+          const ibi = ok.map((i) => beats.ibi[i]);
+          let ptt: number | null = null, matched = 0;
+          const rT = rep.snippet ? rep.rr.t : [];
+          if (rT.length) {
+            const d = rT.map((r) => beats.t.find((b) => b > r + 50 && b <= r + 600)).filter((b, i): b is number => b !== undefined && rT[i] !== undefined).length;
+            const delays: number[] = [];
+            for (const r of rT) { const b = beats.t.find((x) => x > r + 50 && x <= r + 600); if (b !== undefined) delays.push(b - r); }
+            matched = d; ptt = delays.length >= 5 ? median(delays) : null;
+          }
+          rep.ppg = { t: ok.map((i) => beats.t[i]), ibi, hr: ibi.length >= 5 ? 60000 / median(ibi) : null, ptt, matched };
+        }
+      }
+    } catch (e) { L.push(`PPG reference failed: ${(e as Error).message}`); }
+  }
+
+  // summary lines
+  const head = [`ECG test ${rep.session}: ${rep.verdictText}`];
+  if (rep.lead) {
+    head.push(`Lead detector: ${rep.lead.events} events, ${rep.leadChanges.length} distinct states: ` +
+      rep.leadChanges.slice(0, 12).map((c) => `${hms(c.t)}=${c.value}`).join(", ") + (rep.leadChanges.length > 12 ? " …" : ""));
+  } else head.push("Lead detector: no data");
+  if (rep.best?.hr != null) {
+    const rr = rep.rr.rr.filter((v) => v >= RR_MIN && v <= RR_MAX);
+    head.push(`ECG heart rate ${f(rep.best.hr, 1)} bpm from ${rr.length} RR intervals (${f(Math.min(...rr))}–${f(Math.max(...rr))} ms)`);
+  }
+  if (rep.hrSensor.bpm.length) head.push(`Watch heart-rate sensor in the same period: ${f(mean(rep.hrSensor.bpm), 1)} bpm`);
+  if (rep.ppg) {
+    head.push(`PPG: ${rep.ppg.t.length} clean beats` + (rep.ppg.hr != null ? `, ${f(rep.ppg.hr, 1)} bpm` : "") +
+      (rep.ppg.ptt != null ? `, R peak → pulse wave ${f(rep.ppg.ptt)} ms (median, ${rep.ppg.matched} pairs)` : ""));
+  }
+  rep.lines = [...head, ...L, "Note: experimental, not a medical device, no diagnosis."];
+  return rep;
+}
+
+// ---------- SVG plot ----------
+
+function panel(y0: number, h: number, w: number, title: string, series: { t: number[]; v: number[]; color: string; dots?: boolean; step?: boolean }[], tA: number, tB: number): string {
+  const all = series.flatMap((s) => s.v.filter(Number.isFinite));
+  let lo = Math.min(...all), hi = Math.max(...all);
+  if (!all.length) { lo = 0; hi = 1; }
+  if (hi - lo < 1e-9) { lo -= 1; hi += 1; }
+  const X = (t: number) => 60 + ((t - tA) / Math.max(1, tB - tA)) * (w - 80);
+  const Y = (v: number) => y0 + 22 + (1 - (v - lo) / (hi - lo)) * (h - 34);
+  let s = `<text x="60" y="${y0 + 14}" font-size="12" fill="#333">${title}</text>`;
+  s += `<rect x="60" y="${y0 + 22}" width="${w - 80}" height="${h - 34}" fill="none" stroke="#ddd"/>`;
+  s += `<text x="55" y="${y0 + 30}" font-size="9" text-anchor="end" fill="#777">${f(hi, 1)}</text><text x="55" y="${y0 + h - 12}" font-size="9" text-anchor="end" fill="#777">${f(lo, 1)}</text>`;
+  for (const se of series) {
+    if (se.dots) s += se.t.map((t, i) => `<circle cx="${X(t).toFixed(1)}" cy="${Y(se.v[i]).toFixed(1)}" r="2.5" fill="${se.color}"/>`).join("");
+    else {
+      const pts: string[] = [];
+      se.t.forEach((t, i) => {
+        if (!Number.isFinite(se.v[i])) return;
+        if (se.step && pts.length) pts.push(`${X(t).toFixed(1)},${Y(se.v[i - 1] ?? se.v[i]).toFixed(1)}`);
+        pts.push(`${X(t).toFixed(1)},${Y(se.v[i]).toFixed(1)}`);
+      });
+      s += `<polyline points="${pts.join(" ")}" fill="none" stroke="${se.color}" stroke-width="1"/>`;
+    }
+  }
+  return s;
+}
+
+export function reportSvg(r: EcgReport): string {
+  const w = 1000, h = 150, parts: string[] = [];
+  let y = 0;
+  if (r.snippet) {
+    const a = r.snippet.t[0], b = r.snippet.t[r.snippet.t.length - 1];
+    parts.push(panel(y, h, w, `ECG raw (${r.best?.label}), 10 s from ${hms(a)}`, [{ t: r.snippet.t, v: r.snippet.raw, color: "#555" }], a, b)); y += h;
+    const pk = r.snippet.peaks.map((p) => r.snippet!.filt[r.snippet!.t.findIndex((t) => t >= p)]);
+    parts.push(panel(y, h, w, "filtered 0.5–40 Hz, dots = R peaks", [
+      { t: r.snippet.t, v: r.snippet.filt, color: "#1f6feb" }, { t: r.snippet.peaks, v: pk, color: "#d1242f", dots: true }], a, b)); y += h;
+  }
+  const t0 = r.ecg?.firstMs ?? r.lead?.firstMs ?? 0, t1 = r.ecg?.lastMs ?? r.lead?.lastMs ?? 1;
+  parts.push(panel(y, h, w, "RR intervals (ms): blue = ECG, orange = PPG beats, purple = heart-rate sensor", [
+    { t: r.rr.t, v: r.rr.rr, color: "#1f6feb", dots: true },
+    ...(r.ppg ? [{ t: r.ppg.t, v: r.ppg.ibi, color: "#d97706", dots: true }] : []),
+    { t: r.hrSensor.t, v: r.hrSensor.bpm.map((b) => 60000 / b), color: "#8250df" }], t0, t1)); y += h;
+  parts.push(panel(y, h * 0.7, w, "Lead detector (first value)", [{ t: r.leadSeries.t, v: r.leadSeries.v, color: "#1a7f37", step: true }], t0, t1)); y += h * 0.7;
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${y + 10}" font-family="sans-serif"><rect width="100%" height="100%" fill="#fff"/>${parts.join("")}</svg>\n`;
+}
+
+function main() {
+  const session = process.argv.slice(2).find((a) => !a.startsWith("--"));
+  if (!session) { console.error("Usage: tsx src/ecg_probe.ts <session>"); process.exit(2); }
+  const r = analyzeEcg(session);
+  const text = r.lines.join("\n");
+  console.log(text);
+  if (r.registration.length) console.log("\nevents.csv:\n  " + r.registration.join("\n  "));
+  writeFileSync(join(session, "ecg_summary.txt"), text + "\n", "utf8");
+  writeCsv(join(session, "ecg_beats.csv"), ["epoch_ms", "rr_ms"], r.rr.t.map((t, i) => [t, r.rr.rr[i]]));
+  writeFileSync(join(session, "ecg_probe.svg"), reportSvg(r), "utf8");
+  console.log(`\nPlot: ${join(session, "ecg_probe.svg")}`);
+}
+
+if (process.argv[1]?.endsWith("ecg_probe.ts")) main();

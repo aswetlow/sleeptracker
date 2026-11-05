@@ -232,6 +232,7 @@ npm run ppg -- ..\sessions\<session>           # like ppg.py (without plot)
 npm run live -- --serial 192.168.178.35:<port>  # like live.py, title "SleepLogger live · TS"
 npm run live -- --demo
 npm run ui -- --demo                           # live analyzer with a React UI, same options as live
+npm run ecg -- ..\sessions\<session>           # ECG test report (section 10)
 npm test                                       # DSP against scipy reference values
 ```
 Checked against Python: `summary.txt` character-identical on three nights, `ppg_summary.txt` identical on the
@@ -240,7 +241,50 @@ test session and a PPG night (candidates, HRV). The only known difference: in fl
 TypeScript fewer. That only changes the beat count, nothing about HRV or candidates.
 Not ported yet: plots (`--plot`), `audio.py`, `breath_hold.py`, `nights.py`, `ppg_probe.py`, `simulate.py`.
 
-## 10. Sleep position (calibrated)
+## 10. ECG test (experimental)
+Checks whether a third-party app gets raw ECG data from the Pixel Watch. The watch lists two undocumented
+sensors to the app (`sensors.txt`): "ECG Sensor" (`com.google.sensor.ecg`, type 65550, minDelay 4000 µs ≈ 250 Hz)
+and "ECG Lead Detector" (`com.google.sensor.ecg_lead_detector`, type 65551). Whether they deliver data with
+the normal `BODY_SENSORS` permission is exactly the open question – the Fitbit ECG app may use a
+permission or an unlock that third-party apps cannot get.
+
+Procedure (like the Fitbit ECG app):
+1. Sit still, arm resting on the table, watch snug on the wrist.
+2. On the watch: **ECG test** (below "Start + PPG", only visible while nothing is recording).
+3. Immediately put a finger of the other hand on the crown (touch, don't press) and keep it there.
+   The watch shows "Finger on the crown", a countdown, the number of ECG events and the last lead-detector value.
+4. After 60 s the test stops by itself. "Ready" then shows the result, e.g. `ECG: 15000 events, 250 Hz`
+   or `ECG blocked? 0 events` (plus a toast).
+
+The test writes its own session folder with only `raw_ecg.csv`, `raw_ecg_lead.csv` (format as for PPG:
+`epoch_ms,accuracy,n,values`), `raw_ppg.csv` and `hr.csv` as references, `events.csv` and `sensors.txt`.
+`events.csv` contains for each sensor its name, type, minDelay/maxDelay, FIFO, reporting mode and the result of
+`registerListener`, and at the end per sensor: events, first/last time, effective rate, whether all values were
+constant or 0. Night and PPG recordings are unchanged.
+
+Export a single session (same pattern as section 3; the folder name is shown by `ls files/sessions`):
+```
+adb -s <IP:port> shell run-as de.alex.sleeplogger ls files/sessions
+cmd /c "adb -s <IP:port> exec-out run-as de.alex.sleeplogger tar c -C files sessions/20261105_201500 > session.tar"
+tar xf session.tar
+```
+Analysis (TypeScript):
+```
+cd analysis-ts
+npm run ecg -- ..\sessions\20261105_201500
+npm run ui                                      # tab "ECG test" lists all sessions with raw_ecg.csv
+```
+`ecg_probe.ts` reports events, sample rate, values per event, statistics per channel and the lead-detector history.
+If a channel looks like an ECG (≥ 8 regular R peaks): band-pass 0.5–40 Hz, R peaks, heart rate and RR intervals,
+comparison with `hr.csv` and the PPG beats (same rules as `ppg.ts`), and the delay R peak → pulse wave.
+Outputs `ecg_summary.txt`, `ecg_beats.csv` and `ecg_probe.svg` (10-s snippet raw + filtered with R peaks,
+RR over 60 s, lead detector). If the live dashboard is connected during the test (`npm run ui -- --serial …`),
+the Live tab shows the ECG with R peaks in real time.
+
+If the sensor delivers nothing (`registered=false`, 0 events, or only constant values), that is the answer:
+a third-party app gets no ECG. No workarounds beyond that. Not a medical device, no diagnosis.
+
+## 11. Sleep position (calibrated)
 The watch sees how the **wrist** lies, not the torso. With the arm under the pillow or on the hip
 the same body position looks completely different. So the model is personal and needs several arm
 placements per position. Whether it is good enough for you is answered by the phone check below,

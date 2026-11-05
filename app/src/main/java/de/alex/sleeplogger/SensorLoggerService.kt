@@ -17,6 +17,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
+import android.os.Looper
 import android.os.PowerManager
 import android.os.VibrationEffect
 import android.os.Vibrator
@@ -52,6 +53,16 @@ class SensorLoggerService : Service(), SensorEventListener {
             "com.google.sensor.heart_rate_extended" to "raw_hr_ext.csv",
             "com.google.sensor.ppg_controller" to "raw_ppg_ctrl.csv",
         )
+        // ECG test (experimental): undocumented ECG sensors of the Pixel Watch, 60 s, finger on the crown
+        const val EXTRA_ECG_TEST = "ecg_test"
+        const val ECG_TEST_MS = 60_000L
+        const val ECG_TYPE = "com.google.sensor.ecg"
+        const val ECG_LEAD_TYPE = "com.google.sensor.ecg_lead_detector"
+        const val PPG_TYPE = "com.google.wear.sensor.ppg"
+        val ECG_SENSORS = linkedMapOf(
+            ECG_TYPE to "raw_ecg.csv",
+            ECG_LEAD_TYPE to "raw_ecg_lead.csv",
+        )
         const val ACCEL_PERIOD_US = 40_000          // 25 Hz
         const val ACCEL_MAX_LATENCY_US = 10_000_000 // buffer up to 10 s in the FIFO
         const val FLUSH_INTERVAL_MS = 30_000L
@@ -82,6 +93,36 @@ class SensorLoggerService : Service(), SensorEventListener {
             private set
         @Volatile var poseHoldLabel = ""
             private set
+        @Volatile var ecgMode = false
+            private set
+        @Volatile var ecgCount = 0L
+            private set
+        @Volatile var ecgLeadLast = "–"
+            private set
+        @Volatile var ecgEndsAtMs = 0L
+            private set
+        /** Result line of the last ECG test (shown on the watch after it ends), null before the first test. */
+        @Volatile var ecgResult: String? = null
+            private set
+        @Volatile var ecgBlocked = false
+            private set
+    }
+
+    /** Per-sensor statistics for the ECG test: event count, time span, constant / all-zero values. */
+    private class RawStats {
+        var count = 0L; var firstMs = 0L; var lastMs = 0L; var maxN = 0
+        var first: FloatArray? = null; var constant = true; var allZero = true
+
+        fun add(ms: Long, v: FloatArray, n: Int) {
+            if (count == 0L) { firstMs = ms; first = v.copyOf() }
+            else if (!v.contentEquals(first)) constant = false
+            if (v.any { it != 0f }) allZero = false
+            lastMs = ms; count++
+            if (n > maxN) maxN = n
+        }
+
+        /** Events per second over the first-to-last span. */
+        val rate: Double get() = if (count > 1 && lastMs > firstMs) (count - 1) * 1000.0 / (lastMs - firstMs) else 0.0
     }
 
     private lateinit var sensorManager: SensorManager
@@ -94,6 +135,9 @@ class SensorLoggerService : Service(), SensorEventListener {
     private var hrOut: BufferedWriter? = null
     private var eventsOut: BufferedWriter? = null
     private val rawOut = HashMap<Int, BufferedWriter>()   // sensor type -> file
+    private val rawStats = HashMap<Int, RawStats>()       // ECG test only
+    private val ecgTypes = LinkedHashMap<String, Int>()   // ECG test: string type -> registered sensor type
+    private var ecgStatsWritten = false
     @Volatile private var live: LiveStream? = null
 
     // Sensor timestamps are elapsedRealtimeNanos; anchored to the wall clock once
@@ -134,6 +178,12 @@ class SensorLoggerService : Service(), SensorEventListener {
         vib?.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 150, 120, 150), -1))
     }
 
+    // ECG test: stop automatically after ECG_TEST_MS
+    private val ecgFinish = Runnable {
+        writeEcgStats("finished")
+        Handler(Looper.getMainLooper()).post { stopSelf() }
+    }
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -165,16 +215,17 @@ class SensorLoggerService : Service(), SensorEventListener {
         }
         if (isRunning) return START_STICKY
 
+        val ecg = intent?.getBooleanExtra(EXTRA_ECG_TEST, false) ?: false
         if (Build.VERSION.SDK_INT >= 34) {
-            startForeground(NOTIFICATION_ID, buildNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_HEALTH)
+            startForeground(NOTIFICATION_ID, buildNotification(ecg), ServiceInfo.FOREGROUND_SERVICE_TYPE_HEALTH)
         } else {
-            startForeground(NOTIFICATION_ID, buildNotification())
+            startForeground(NOTIFICATION_ID, buildNotification(ecg))
         }
-        startLogging(intent?.getBooleanExtra(EXTRA_RAW, false) ?: false)
+        startLogging(intent?.getBooleanExtra(EXTRA_RAW, false) ?: false, ecg)
         return START_STICKY
     }
 
-    private fun startLogging(raw: Boolean) {
+    private fun startLogging(raw: Boolean, ecg: Boolean = false) {
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
         thread = HandlerThread("sensor-writer").apply { start() }
         handler = Handler(thread.looper)
@@ -183,11 +234,15 @@ class SensorLoggerService : Service(), SensorEventListener {
 
         val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         val dir = File(filesDir, "sessions/$stamp").apply { mkdirs() }
-        accelOut = File(dir, "accel.csv").bufferedWriter().apply { write("epoch_ms,x,y,z\n") }
-        gyroOut = File(dir, "gyro.csv").bufferedWriter().apply { write("epoch_ms,x,y,z\n") }
+        if (!ecg) {
+            accelOut = File(dir, "accel.csv").bufferedWriter().apply { write("epoch_ms,x,y,z\n") }
+            gyroOut = File(dir, "gyro.csv").bufferedWriter().apply { write("epoch_ms,x,y,z\n") }
+        }
         hrOut = File(dir, "hr.csv").bufferedWriter().apply { write("epoch_ms,bpm,accuracy\n") }
         eventsOut = File(dir, "events.csv").bufferedWriter().apply { write("epoch_ms,event\n") }
-        accelCount = 0; rawCount = 0; markCount = 0; rawMode = raw
+        accelCount = 0; rawCount = 0; markCount = 0; rawMode = raw || ecg
+        ecgMode = ecg; ecgCount = 0; ecgLeadLast = "–"; ecgResult = null; ecgBlocked = false
+        ecgStatsWritten = false; rawStats.clear(); ecgTypes.clear()
         poseCounts.clear(); poseHoldUntilMs = 0L
         startedAtMs = System.currentTimeMillis()
 
@@ -198,6 +253,11 @@ class SensorLoggerService : Service(), SensorEventListener {
                 "minDelay=${it.minDelay}us maxDelay=${it.maxDelay}us | range=${it.maximumRange} " +
                 "res=${it.resolution} | fifo=${it.fifoMaxEventCount} | mode=${it.reportingMode}"
         } + "\n")
+
+        if (ecg) {
+            startEcgTest(dir, all)
+            return
+        }
 
         // A wake-up accelerometer wakes the CPU itself when the FIFO is full.
         // If there is none, we hold a partial wakelock (costs more battery).
@@ -247,6 +307,71 @@ class SensorLoggerService : Service(), SensorEventListener {
         Log.i(TAG, "logging to ${dir.absolutePath}")
     }
 
+    /**
+     * ECG test: only heart rate, raw PPG and the two ECG sensors, 60 s, then stop.
+     * The ECG sensors are registered as fast as possible (0 µs, no batching), non-wake-up variant first.
+     */
+    private fun startEcgTest(dir: File, all: List<Sensor>) {
+        val hr = sensorManager.getDefaultSensor(Sensor.TYPE_HEART_RATE)
+        // the screen stays on during the test; the wakelock only keeps the writer thread alive
+        wakeLock = (getSystemService(Context.POWER_SERVICE) as PowerManager)
+            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "SleepLogger::ecg")
+            .apply { acquire(5 * 60_000L) }
+        logEvent("ecg_test start duration=${ECG_TEST_MS / 1000}s hr=${hr?.name}")
+        hr?.let {
+            sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL, 0, handler)
+        } ?: logEvent("no_heart_rate_sensor")
+
+        for ((stringType, file) in linkedMapOf(PPG_TYPE to "raw_ppg.csv") + ECG_SENSORS) {
+            val s = all.firstOrNull { it.stringType == stringType && !it.isWakeUpSensor }
+                ?: all.firstOrNull { it.stringType == stringType }
+            if (s == null) { logEvent("raw_missing $stringType"); continue }
+            rawOut[s.type] = File(dir, file).bufferedWriter().apply { write("epoch_ms,accuracy,n,values\n") }
+            val ok = sensorManager.registerListener(this, s, 0, 0, handler)
+            logEvent("raw ${s.name} | ${s.vendor} | type=${s.type} ${s.stringType} | wakeup=${s.isWakeUpSensor} | " +
+                "minDelay=${s.minDelay}us maxDelay=${s.maxDelay}us | fifo=${s.fifoMaxEventCount} " +
+                "reserved=${s.fifoReservedEventCount} | mode=${s.reportingMode} | registered=$ok")
+            if (!ok) { rawOut.remove(s.type)?.close(); continue }
+            ecgTypes[stringType] = s.type
+        }
+
+        live = LiveStream().also { it.start() }
+        handler.postDelayed(flushRunnable, FLUSH_INTERVAL_MS)
+        handler.post(batteryRunnable)
+        handler.post(liveRunnable)
+        ecgEndsAtMs = System.currentTimeMillis() + ECG_TEST_MS
+        handler.postDelayed(ecgFinish, ECG_TEST_MS)
+        isRunning = true
+        Log.i(TAG, "ECG test, logging to ${dir.absolutePath}")
+    }
+
+    /** Writes events, time span, rate and constant/zero flags per sensor to events.csv (writer thread). */
+    private fun writeEcgStats(reason: String) {
+        if (ecgStatsWritten) return
+        ecgStatsWritten = true
+        for (stringType in listOf(ECG_TYPE, ECG_LEAD_TYPE, PPG_TYPE)) {
+            val type = ecgTypes[stringType]
+            val st = type?.let { rawStats[it] }
+            when {
+                type == null -> logEvent("ecg_stats $stringType not_registered")
+                st == null -> logEvent("ecg_stats $stringType events=0")
+                else -> logEvent("ecg_stats $stringType events=${st.count} first=${st.firstMs} last=${st.lastMs} " +
+                    "rate=${"%.1f".format(Locale.US, st.rate)}Hz values_per_event=${st.maxN} " +
+                    "constant=${st.constant} all_zero=${st.allZero}")
+            }
+        }
+        val ecg = ecgTypes[ECG_TYPE]?.let { rawStats[it] }
+        ecgBlocked = ecg == null || ecg.count == 0L
+        ecgResult = when {
+            ecgTypes[ECG_TYPE] == null -> "ECG blocked? sensor not registered"
+            ecg == null || ecg.count == 0L -> "ECG blocked? 0 events"
+            ecg.allZero -> "ECG: ${ecg.count} events, all 0"
+            ecg.constant -> "ECG: ${ecg.count} events, constant"
+            else -> "ECG: ${ecg.count} events, ${"%.0f".format(Locale.US, ecg.rate)} Hz"
+        }
+        logEvent("ecg_test $reason result=$ecgResult")
+    }
+
     override fun onSensorChanged(event: SensorEvent) {
         val epochMs = (event.timestamp + epochOffsetNs) / 1_000_000L
         when (event.sensor.type) {
@@ -275,6 +400,13 @@ class SensorLoggerService : Service(), SensorEventListener {
                 w.write("$epochMs,${event.accuracy},$n,$joined\n")
                 if (event.sensor.stringType == "com.google.wear.sensor.ppg") live?.send("p,$epochMs,$joined\n")
                 rawCount++
+                if (ecgMode) {
+                    rawStats.getOrPut(event.sensor.type) { RawStats() }.add(epochMs, v, n)
+                    when (event.sensor.stringType) {
+                        ECG_TYPE -> { ecgCount++; live?.send("c,$epochMs,$joined\n") }
+                        ECG_LEAD_TYPE -> { ecgLeadLast = joined; live?.send("l,$epochMs,$joined\n") }
+                    }
+                }
             }
         }
     }
@@ -295,11 +427,13 @@ class SensorLoggerService : Service(), SensorEventListener {
             handler.removeCallbacks(liveRunnable)
             handler.removeCallbacks(poseDone)
             poseHoldUntilMs = 0L
+            handler.removeCallbacks(ecgFinish)
             live?.stop(); live = null; liveConnected = false
             // finish writing on the writer thread so no lines are lost.
             handler.post {
                 batteryRunnable.run()
                 handler.removeCallbacks(batteryRunnable)
+                if (ecgMode) writeEcgStats("stopped_early")
                 logEvent("stop")
                 accelOut?.close(); gyroOut?.close(); hrOut?.close(); eventsOut?.close()
                 rawOut.values.forEach { it.close() }; rawOut.clear()
@@ -311,7 +445,7 @@ class SensorLoggerService : Service(), SensorEventListener {
         super.onDestroy()
     }
 
-    private fun buildNotification(): Notification {
+    private fun buildNotification(ecg: Boolean = false): Notification {
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(
             NotificationChannel(CHANNEL_ID, "Sleep logging", NotificationManager.IMPORTANCE_LOW)
@@ -321,7 +455,7 @@ class SensorLoggerService : Service(), SensorEventListener {
         )
         return Notification.Builder(this, CHANNEL_ID)
             .setContentTitle("SleepLogger running")
-            .setContentText("Recording movement + heart rate")
+            .setContentText(if (ecg) "ECG test (60 s)" else "Recording movement + heart rate")
             .setSmallIcon(android.R.drawable.ic_menu_compass)
             .setOngoing(true)
             .setContentIntent(open)

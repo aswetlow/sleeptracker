@@ -6,10 +6,12 @@
  *     npm run ui -- --serial 192.168.178.35:41773
  *     npm run ui -- --replay ../sessions/<session> --speed 4
  *     npm run ui:dev -- --demo        # with Vite hot reload for the UI
+ *     --sessions <dir>                # where saved sessions live for the "ECG test" tab (default ../sessions)
  */
 import express from "express";
-import { existsSync, type WriteStream } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, readdirSync, statSync, type WriteStream } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { analyzeEcg } from "../src/ecg_probe.ts";
 import { fileURLToPath } from "node:url";
 import { argValue } from "../src/lib/io.ts";
 import { State, demoFeeder, openBrowser, openRecorder, replayFeeder, setupAdb, startProcessing, tcpServer } from "../src/live_core.ts";
@@ -47,6 +49,26 @@ async function main() {
 
   const app = express();
   app.get("/api/snapshot", (_req, res) => { res.type("json").set("Cache-Control", "no-store").send(payload()); });
+  // ECG tests saved on disk (exported from the watch): list + full report per session
+  const sessionsDir = resolve(argValue(args, "--sessions") ?? join(HERE, "..", "..", "sessions"));
+  const isEcgSession = (d: string) => ["raw_ecg.csv", "raw_ecg_lead.csv"].some((f) => existsSync(join(d, f)));
+  app.get("/api/ecg/sessions", (_req, res) => {
+    let names: string[] = [];
+    try {
+      names = readdirSync(sessionsDir).filter((n) => {
+        const d = join(sessionsDir, n);
+        return statSync(d).isDirectory() && isEcgSession(d);
+      }).sort().reverse();
+    } catch { /* folder missing */ }
+    res.json({ dir: sessionsDir, sessions: names });
+  });
+  app.get("/api/ecg/sessions/:name", (req, res) => {
+    const name = req.params.name;
+    const dir = join(sessionsDir, name);
+    if (!/^[\w.-]+$/.test(name) || !existsSync(dir) || !isEcgSession(dir)) { res.status(404).json({ error: "not an ECG-test session" }); return; }
+    try { res.json(analyzeEcg(dir)); } catch (e) { res.status(500).json({ error: (e as Error).message }); }
+  });
+
   app.get("/api/stream", (req, res) => {
     res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store", Connection: "keep-alive" });
     res.write("retry: 1000\n\n");
