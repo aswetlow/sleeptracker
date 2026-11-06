@@ -17,7 +17,7 @@ test("parseListing: sizes per session, recording = written in the last 2 min", (
 });
 
 test("mdnsTargets finds ip:port of wireless debugging", () => {
-  assert.deepEqual(mdnsTargets("List of discovered mdns services\nadb-XYZ\t_adb-tls-connect._tcp\t192.168.178.35:44691\nadb-XYZ\t_adb-tls-pairing._tcp\t192.168.178.35:37000\n"), ["192.168.178.35:44691"]);
+  assert.deepEqual(mdnsTargets("List of discovered mdns services\nadb-XYZ\t_adb-tls-connect._tcp\t192.168.1.50:44691\nadb-XYZ\t_adb-tls-pairing._tcp\t192.168.1.50:37000\n"), ["192.168.1.50:44691"]);
 });
 
 test("TarExtract restores files byte for byte, also in small chunks and with long names", async () => {

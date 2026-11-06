@@ -1,6 +1,6 @@
 /**
  * Beat-to-beat analysis of the raw pulse wave (raw_ppg.csv, button "Start + PPG").
- * TypeScript version of analysis/ppg.py, same rules and output files.
+ * TypeScript version of legacy/python/ppg.py, same rules and output files.
  *
  *     npx tsx src/ppg.ts ../sessions/<session> [--channel 6]
  *

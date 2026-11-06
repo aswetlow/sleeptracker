@@ -1,8 +1,8 @@
 # SleepLogger analysis in TypeScript
 
-TypeScript version of `../analysis/` (analyze, ppg, fitbit, live, position). No runtime dependencies for the analysis;
+TypeScript tools for SleepLogger (analyze, ppg, fitbit, live, position, ecg, sync, pull); they replaced the Python scripts in `../legacy/python/`. No runtime dependencies for the analysis;
 the signal processing (Butterworth, sosfiltfilt, find_peaks, Welch, rolling medians) lives in
-`src/lib/` and is modelled on scipy/pandas. Usage: section 9 of the main README.
+`src/lib/` and is modelled on scipy/pandas. Usage: see the main README and `docs/manual.md`.
 
 | File | equivalent | outputs |
 |---|---|---|
@@ -10,7 +10,7 @@ the signal processing (Butterworth, sosfiltfilt, find_peaks, Welch, rolling medi
 | `src/ppg.ts` | `ppg.py` | ppg_summary.txt, ppg_beats.csv, ppg_events.csv, ppg_felt.csv |
 | `src/live.ts` + `src/live_page.html` | `live.py` | dashboard on http://localhost:8765 |
 | `src/position.ts` | `position.py` | pose_model.json (shared with Python), positions.csv, position_summary.txt, position_validation.csv/.txt, `--plot` as SVG |
-| `src/ecg_probe.ts` | – | ECG test: ecg_summary.txt, ecg_beats.csv, ecg_probe.svg (README section 10) |
+| `src/ecg_probe.ts` | – | ECG test: ecg_summary.txt, ecg_beats.csv, ecg_probe.svg (manual section 10) |
 | `server/live_server.ts` + `web/` | – | live analyzer (React, shadcn style) on http://localhost:8765 |
 
 `src/live_core.ts` contains receiving, processing and the data sources; both dashboards use it.
@@ -19,7 +19,7 @@ the signal processing (Butterworth, sosfiltfilt, find_peaks, Welch, rolling medi
 
 ```
 npm run ui -- --demo                               # builds web/ and starts the server
-npm run ui -- --serial 192.168.178.35:<port>       # real watch, same options as live.ts
+npm run ui -- --serial 192.168.1.50:<port>       # real watch, same options as live.ts
 npm run ui -- --replay ../sessions/<session> --speed 4
 npm run ui:dev -- --demo                           # UI with hot reload (Vite inside Express)
 ```
