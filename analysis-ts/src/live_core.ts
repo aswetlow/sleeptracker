@@ -48,7 +48,7 @@ export interface LiveChannels {
   /** [time, new width] whenever the number of values per line changes */
   modes: [number, number][];
 }
-const CH_MAX = 7, DC_MIN = 5000;
+const CH_MAX = 7, DC_MIN = 20000;   // ambient channels reach a few thousand when room light shines through a finger
 
 /** Fixed-length ring buffer (like deque(maxlen)). */
 class Ring<T> {
