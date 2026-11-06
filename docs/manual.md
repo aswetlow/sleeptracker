@@ -346,6 +346,14 @@ Result of the first test (2026-11-05): the oximeter went down to 79 %, but the w
 line (day: v1 20 mA, v3 2.35 mA, v5 green, v0/v2/v4 ambient) and 7 values (night: v1 20 mA, v3/v4 4.9 mA,
 v6 green, v0/v2/v5 ambient). Repeat the test only when the card below shows **7 channels**.
 
+Result of the second test (2026-11-06, session `20261106_151153`, 7 channels the whole time): two holds, oximeter
+99 → 82 % and 99 → 81 %. The ratio R = PI v4 / PI v1 rose from 0.50 to 0.98 in both holds (r = 0.86 and 0.91
+against the oximeter within the holds), and the uncalibrated 110 − 25·R put the lowest points at 81 and 85 %.
+So **v4 is most likely red, v1 (and v3, its ratio to v1 stays at 1.0) infrared**. During the fast, deep breathing
+rounds before each hold the estimate dropped to 52–80 % while the oximeter stayed at 99 %, together with jumps
+in pulse amplitude on both channels; in calm minutes it stayed within about two points. Not validated for
+nights: three nights gave only r = 0.21–0.64 against Fitbit, whose SpO2 barely moves (93–97 %).
+
 **PPG channels card** (live analyzer, below the SpO2 card): mode badge (6/7 channels, time of the last switch),
 per channel the LED current, DC, pulse strength PI and the last 8 s, plus 10 min of DC (relative) and PI.
 LED currents need the current watch app (it streams the PPG controller as `q` lines) or a replay.

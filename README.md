@@ -75,7 +75,7 @@ Each one is described step by step in the [manual](docs/manual.md):
 - [Raw PPG test](docs/manual.md#6-testing-raw-ppg-data-experimental): what the hidden PPG sensor delivers.
 - [Breath-hold test](docs/manual.md#7-breath-hold-test-voluntary-breath-holding-python-only): does the watch see a breathing pause?
 - [ECG test](docs/manual.md#10-ecg-test-experimental): ECG from the crown into your own app, plus morning HRV.
-- [SpO2 calibration](docs/manual.md#10b-spo2-calibration-test-experimental): channel ratios against a finger oximeter (so far without success).
+- [SpO2 calibration](docs/manual.md#10b-spo2-calibration-test-experimental): channel ratios against a finger oximeter (in 7-channel mode the red/infrared ratio follows a breath-hold drop).
 - [Sleep position](docs/manual.md#11-sleep-position-calibrated): calibrate wrist poses and classify nights.
 - [Audio reference](docs/manual.md#5-audio-reference-from-the-phone-optional-python-only): a phone recording as ground truth for breathing and snoring.
 
@@ -103,8 +103,9 @@ Every recording is a folder `sessions/<YYYYMMDD_HHMMSS>/` with plain CSV:
 ## Limits
 
 Read the [honest limits](docs/manual.md#limits-honestly) before trusting any number. In short: breathing is only
-estimated while you lie still, heart-rate spikes are a hint and not an apnea index, SpO2 cannot be measured from
-the raw channels in the sensor mode an app can control, and nothing here replaces a sleep study.
+estimated while you lie still, heart-rate spikes are a hint and not an apnea index, SpO2 from the raw channels
+follows a deep drop during a breath hold but is uncalibrated and thrown off by deep breathing, so it is not a
+night value, and nothing here replaces a sleep study.
 
 ## How this was made
 
