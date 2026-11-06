@@ -22,6 +22,24 @@ to CSV at night, plus Python scripts for analysis.
 Tip: turn wireless debugging off at night, and do a 30-minute test before the first night.
 
 ## 3. Export the data
+**Over Wi-Fi, without ADB (recommended).** The watch app talks to the PC directly; wireless debugging is only
+needed to install new app versions.
+```
+cd analysis-ts
+npm run sync        # or npm run ui – both receive sessions in the background
+```
+On the watch: **Sync to PC** (also runs by itself 3 s after **Stop**). The watch switches Wi-Fi on for the
+transfer, finds the PC by broadcast (UDP 9001, same Wi-Fi), uploads every finished session to `sessions\`
+(HTTP 9002, only missing/changed files, checked by size) and deletes it on the watch once the PC has it
+complete. The session being recorded is never touched. The first time Windows asks whether Node.js may use
+the network: allow **private networks**. Only clients from private address ranges are accepted.
+
+The **live view** works the same way: `npm run ui`, start a recording, and the watch connects over Wi-Fi by itself
+(the status line on the watch shows "Live ✓ Wi-Fi"). To save battery the watch only looks for the PC during the
+first 15 min of a recording and during the ECG/SpO2 tests; a connection made in that window stays up. With
+wireless debugging on, `adb reverse` (127.0.0.1) is still tried first.
+
+**Over ADB** (fallback):
 **One command** (watch with wireless debugging on, same Wi-Fi as the PC):
 ```
 cd analysis-ts

@@ -14,6 +14,7 @@ import { dirname, join, resolve } from "node:path";
 import { analyzeEcg, hrvHistory, writeHrvHistory } from "../src/ecg_probe.ts";
 import { fileURLToPath } from "node:url";
 import { argValue } from "../src/lib/io.ts";
+import { startSyncServer } from "../src/lib/sync_server.ts";
 import { State, demoFeeder, openBrowser, openRecorder, replayFeeder, setupAdb, startProcessing, tcpServer } from "../src/live_core.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -41,7 +42,7 @@ async function main() {
 
   const meta: Meta = {
     mode,
-    source: mode === "demo" ? "Synthetic watch" : mode === "replay" ? `Replay ${replay}` : serial ? `Watch ${serial}` : "Watch (USB/ADB)",
+    source: mode === "demo" ? "Synthetic watch" : mode === "replay" ? `Replay ${replay}` : serial ? `Watch ${serial}` : "Watch (ADB or Wi-Fi)",
     tcpPort: port,
     recording: rec !== null,
   };
@@ -51,6 +52,8 @@ async function main() {
   app.get("/api/snapshot", (_req, res) => { res.type("json").set("Cache-Control", "no-store").send(payload()); });
   // ECG tests saved on disk (exported from the watch): list + full report per session
   const sessionsDir = resolve(argValue(args, "--sessions") ?? join(HERE, "..", "..", "sessions"));
+  // the watch finds this PC over Wi-Fi (live view without ADB) and uploads finished sessions here
+  if (mode === "live") startSyncServer({ sessionsDir, livePort: port });
   const isEcgSession = (d: string) => ["raw_ecg.csv", "raw_ecg_lead.csv"].some((f) => existsSync(join(d, f)));
   app.get("/api/ecg/sessions", (_req, res) => {
     let names: string[] = [];

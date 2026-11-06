@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { autocorr, butterBandpass, findPeaks, peakProminences, principalComponent, sosfiltfilt } from "./lib/dsp.ts";
 import { detectR } from "./ecg_probe.ts";
 import { findWatch } from "./lib/adb.ts";
+import { isPrivate } from "./lib/sync_server.ts";
 import { hrv, type Hrv } from "./lib/hrv.ts";
 import { readEvents, readNumericCsv } from "./lib/io.ts";
 import { mean, median, std } from "./lib/stats.ts";
@@ -487,7 +488,8 @@ export class State {
 
 export function tcpServer(state: State, port: number) {
   const srv = createTcp((sock) => {
-    console.log(`watch connected (${sock.remoteAddress})`);
+    if (!isPrivate(sock.remoteAddress)) { sock.destroy(); return; }
+    console.log(`watch connected (${sock.remoteAddress === "127.0.0.1" || sock.remoteAddress === "::ffff:127.0.0.1" ? "adb" : `Wi-Fi ${sock.remoteAddress}`})`);
     let buf = "";
     sock.setEncoding("utf8");
     sock.on("data", (chunk: string) => {
@@ -499,7 +501,8 @@ export function tcpServer(state: State, port: number) {
     sock.on("error", () => { /* watch gone */ });
   });
   srv.on("error", (e) => console.error(`TCP port ${port}: ${e.message}`));
-  srv.listen(port, "127.0.0.1");
+  // 0.0.0.0: the watch also connects directly over Wi-Fi (WifiLink); only private networks are accepted
+  srv.listen(port, "0.0.0.0");
 }
 
 /** Synthetic watch: heart rate ~62 bpm, occasional ectopic beat, breathing 14/min, occasional movement. */
@@ -593,7 +596,7 @@ export function replayFeeder(state: State, session: string, speed: number) {
 
 export function setupAdb(serial: string | undefined, port: number) {
   if (!serial) {
-    try { serial = findWatch(undefined); } catch (e) { console.log((e as Error).message); }
+    try { serial = findWatch(undefined); } catch { console.log("No ADB connection – fine, the watch app connects over Wi-Fi by itself (start a recording)."); return; }
   }
   const args = [...(serial ? ["-s", serial] : []), "reverse", `tcp:${port}`, `tcp:${port}`];
   const r = spawnSync("adb", args, { encoding: "utf8", timeout: 10000 });

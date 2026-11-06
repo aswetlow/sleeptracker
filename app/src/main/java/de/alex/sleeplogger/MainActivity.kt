@@ -28,6 +28,7 @@ class MainActivity : ComponentActivity() {
     private val poseButtons = LinkedHashMap<String, Button>()
     private lateinit var ecgButton: Button
     private lateinit var spo2Button: Button
+    private lateinit var syncButton: Button
     private val clockFmt = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US)
     private var pendingMode = Mode.NORMAL
     private var shownEcgResult: String? = null
@@ -72,6 +73,8 @@ class MainActivity : ComponentActivity() {
         ecgButton = Button(this).apply { text = "ECG test"; setOnClickListener { onToggle(Mode.ECG) } }
         // SpO2 calibration: PPG recording, large clock, screen stays on (film watch + oximeter together)
         spo2Button = Button(this).apply { text = "SpO2 test"; setOnClickListener { onToggle(Mode.SPO2) } }
+        // send finished sessions to the PC over Wi-Fi (npm run sync / npm run ui there), then delete them here
+        syncButton = Button(this).apply { text = "Sync to PC"; setOnClickListener { SessionSync.start(this@MainActivity) } }
         // ectopic beat felt -> time marker in events.csv ("felt"), as a reference for ppg.py
         markButton = Button(this).apply {
             text = "Felt"
@@ -119,6 +122,8 @@ class MainActivity : ComponentActivity() {
                 LinearLayout.LayoutParams.WRAP_CONTENT))
             addView(spo2Button, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT))
+            addView(syncButton, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT))
             addView(poseHeader)
             poseButtons.values.forEach {
                 addView(it, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
@@ -143,6 +148,8 @@ class MainActivity : ComponentActivity() {
         if (SensorLoggerService.isRunning) {
             startService(Intent(this, SensorLoggerService::class.java)
                 .setAction(SensorLoggerService.ACTION_STOP))
+            // after Stop: send the night to the PC if it is reachable (files are closed after ~1 s)
+            ui.postDelayed({ if (!SensorLoggerService.isRunning) SessionSync.start(this) }, 3000)
         } else if (requiredPermissions.all { checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }) {
             startLogger(mode)
         } else {
@@ -166,23 +173,25 @@ class MainActivity : ComponentActivity() {
             toggle.text = "Stop"
             markButton.visibility = View.GONE
             poseHeader.text = "SpO2 test · PPG ${SensorLoggerService.rawCount / 1000}k" +
-                (if (SensorLoggerService.liveConnected) " · Live ✓" else "")
+                (if (SensorLoggerService.liveConnected) " · Live ✓ ${SensorLoggerService.liveVia}" else "")
             poseHeader.visibility = View.VISIBLE
             poseButtons.values.forEach { it.visibility = View.GONE }
             rawButton.visibility = View.GONE
             ecgButton.visibility = View.GONE
             spo2Button.visibility = View.GONE
+            syncButton.visibility = View.GONE
             window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         } else if (SensorLoggerService.isRunning && SensorLoggerService.ecgMode) {
             val left = ((SensorLoggerService.ecgEndsAtMs - System.currentTimeMillis()) / 1000).coerceAtLeast(0)
             status.text = "Finger on the crown\n$left s · ECG ${SensorLoggerService.ecgCount}\n" +
                 "lead ${SensorLoggerService.ecgLeadLast}" +
-                (if (SensorLoggerService.liveConnected) " · Live ✓" else "")
+                (if (SensorLoggerService.liveConnected) " · Live ✓ ${SensorLoggerService.liveVia}" else "")
             toggle.text = "Stop"
             shownEcgResult = null   // so the result of this test is shown/toasted
             rawButton.visibility = View.GONE
             ecgButton.visibility = View.GONE
             spo2Button.visibility = View.GONE
+            syncButton.visibility = View.GONE
             markButton.visibility = View.GONE
             poseHeader.visibility = View.GONE
             poseButtons.values.forEach { it.visibility = View.GONE }
@@ -191,11 +200,12 @@ class MainActivity : ComponentActivity() {
             // keep it short so "Felt" and "Stop" fit on the screen without scrolling
             status.text = "${SensorLoggerService.lastBpm.toInt()} bpm · felt ${SensorLoggerService.markCount}\n" +
                 (if (SensorLoggerService.rawMode) "PPG ${SensorLoggerService.rawCount / 1000}k" else "no PPG") +
-                (if (SensorLoggerService.liveConnected) " · Live ✓" else "")
+                (if (SensorLoggerService.liveConnected) " · Live ✓ ${SensorLoggerService.liveVia}" else "")
             toggle.text = "Stop"
             rawButton.visibility = View.GONE
             ecgButton.visibility = View.GONE
             spo2Button.visibility = View.GONE
+            syncButton.visibility = View.GONE
             markButton.visibility = View.VISIBLE
             val now = System.currentTimeMillis()
             val holdLeft = (SensorLoggerService.poseHoldUntilMs - now) / 1000
@@ -217,7 +227,10 @@ class MainActivity : ComponentActivity() {
             else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         } else {
             val ecgResult = SensorLoggerService.ecgResult
-            status.text = if (ecgResult != null) "Ready\n$ecgResult" else "Ready"
+            status.text = (if (ecgResult != null) "Ready\n$ecgResult" else "Ready") +
+                (if (SessionSync.status.isNotEmpty()) "\n${SessionSync.status}" else "")
+            syncButton.visibility = View.VISIBLE
+            syncButton.isEnabled = !SessionSync.running
             if (ecgResult != null && ecgResult != shownEcgResult) {
                 shownEcgResult = ecgResult
                 if (SensorLoggerService.ecgBlocked) Toast.makeText(this, ecgResult, Toast.LENGTH_LONG).show()
@@ -229,7 +242,8 @@ class MainActivity : ComponentActivity() {
             markButton.visibility = View.GONE
             poseHeader.visibility = View.GONE
             poseButtons.values.forEach { it.visibility = View.GONE }
-            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            if (SessionSync.running) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         }
     }
 }

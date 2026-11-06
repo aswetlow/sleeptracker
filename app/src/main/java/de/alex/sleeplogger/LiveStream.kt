@@ -1,5 +1,6 @@
 package de.alex.sleeplogger
 
+import android.content.Context
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.util.concurrent.ConcurrentHashMap
@@ -19,7 +20,14 @@ import java.util.concurrent.TimeUnit
  *   c,epoch_ms,v0 v1 … raw ECG (ECG test)  l,epoch_ms,v0 …     ECG lead detector
  *   q,epoch_ms,ch mA … PPG controller (LED current per channel; resent on every connect)
  */
-class LiveStream(private val port: Int = 9000) {
+/**
+ * Two ways to the laptop, tried in this order:
+ *  1. 127.0.0.1:port via `adb reverse` (wireless debugging on),
+ *  2. directly over Wi-Fi (WifiLink): the PC answers a broadcast with its address. Only while wifiAllowed()
+ *     is true (start of a recording, ECG/SpO2 test) so Wi-Fi does not run all night for nothing; an established
+ *     Wi-Fi connection is kept as long as the PC listens.
+ */
+class LiveStream(private val ctx: Context, private val port: Int = 9000, private val wifiAllowed: () -> Boolean = { false }) {
     private val queue = LinkedBlockingQueue<String>(20_000)
     @Volatile var connected = false
         private set
@@ -28,9 +36,30 @@ class LiveStream(private val port: Int = 9000) {
 
     fun start() = thread.start()
 
+    /** "adb" or "Wi-Fi" while connected */
+    @Volatile var via = ""
+        private set
+    private var wifiHeld = false
+
     fun stop() {
         running = false
         thread.interrupt()
+    }
+
+    private fun connect(): Socket? {
+        try {
+            return Socket().apply { connect(InetSocketAddress("127.0.0.1", port), 500); via = "adb" }
+        } catch (_: Exception) {}
+        if (!wifiAllowed()) {
+            if (wifiHeld) { WifiLink.release(ctx); wifiHeld = false }
+            return null
+        }
+        if (!wifiHeld) { WifiLink.acquire(ctx); wifiHeld = true }
+        val net = WifiLink.await(10_000) ?: return null
+        val pc = WifiLink.findPc(ctx, net, 2500) ?: return null
+        return try {
+            net.socketFactory.createSocket().apply { connect(InetSocketAddress(pc.host, pc.livePort), 2000); via = "Wi-Fi" }
+        } catch (_: Exception) { null }
     }
 
     /** Latest line per key, sent again whenever the laptop (re)connects (state that only changes rarely). */
@@ -47,10 +76,14 @@ class LiveStream(private val port: Int = 9000) {
     }
 
     private fun loop() {
+        try { loopInner() } finally { if (wifiHeld) { WifiLink.release(ctx); wifiHeld = false } }
+    }
+
+    private fun loopInner() {
         while (running) {
             try {
-                Socket().use { s ->
-                    s.connect(InetSocketAddress("127.0.0.1", port), 1000)
+                val sock = connect()
+                sock?.use { s ->
                     s.tcpNoDelay = true
                     val out = s.getOutputStream().bufferedWriter()
                     queue.clear()

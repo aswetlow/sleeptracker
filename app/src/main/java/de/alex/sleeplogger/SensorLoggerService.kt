@@ -86,7 +86,15 @@ class SensorLoggerService : Service(), SensorEventListener {
             private set
         @Volatile var startedAtMs = 0L
             private set
+        /** folder name of the session being recorded (skipped by the Wi-Fi sync) */
+        @Volatile var currentSession: String? = null
+            private set
+        /** live view over Wi-Fi: how long after the start of a recording the watch looks for the PC */
+        const val LIVE_WIFI_WINDOW_MS = 15 * 60_000L
         @Volatile var liveConnected = false
+            private set
+        /** "adb" or "Wi-Fi" */
+        @Volatile var liveVia = ""
             private set
         /** calibration taps per position in this recording */
         val poseCounts = java.util.concurrent.ConcurrentHashMap<String, Int>()
@@ -156,9 +164,14 @@ class SensorLoggerService : Service(), SensorEventListener {
     }
 
     // while the laptop is watching: flush the sensor FIFOs every second, otherwise accel/gyro would arrive in 10-s blocks
+    /** Wi-Fi for the live view only at the start of a recording and in the short tests (battery). */
+    private fun liveWifiAllowed(): Boolean =
+        ecgMode || spo2Mode || System.currentTimeMillis() - startedAtMs < LIVE_WIFI_WINDOW_MS
+
     private val liveRunnable = object : Runnable {
         override fun run() {
             liveConnected = live?.connected == true
+            liveVia = live?.via ?: ""
             if (liveConnected) sensorManager.flush(this@SensorLoggerService)
             handler.postDelayed(this, 1000)
         }
@@ -240,6 +253,7 @@ class SensorLoggerService : Service(), SensorEventListener {
 
         val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         val dir = File(filesDir, "sessions/$stamp").apply { mkdirs() }
+        currentSession = stamp
         if (!ecg) {
             accelOut = File(dir, "accel.csv").bufferedWriter().apply { write("epoch_ms,x,y,z\n") }
             gyroOut = File(dir, "gyro.csv").bufferedWriter().apply { write("epoch_ms,x,y,z\n") }
@@ -305,7 +319,7 @@ class SensorLoggerService : Service(), SensorEventListener {
             }
         }
 
-        live = LiveStream().also { it.start() }
+        live = LiveStream(this, wifiAllowed = ::liveWifiAllowed).also { it.start() }
         handler.postDelayed(flushRunnable, FLUSH_INTERVAL_MS)
         handler.post(batteryRunnable)
         handler.post(liveRunnable)
@@ -341,7 +355,7 @@ class SensorLoggerService : Service(), SensorEventListener {
             ecgTypes[stringType] = s.type
         }
 
-        live = LiveStream().also { it.start() }
+        live = LiveStream(this, wifiAllowed = ::liveWifiAllowed).also { it.start() }
         handler.postDelayed(flushRunnable, FLUSH_INTERVAL_MS)
         handler.post(batteryRunnable)
         handler.post(liveRunnable)
@@ -442,6 +456,7 @@ class SensorLoggerService : Service(), SensorEventListener {
                 handler.removeCallbacks(batteryRunnable)
                 if (ecgMode) writeEcgStats("stopped_early")
                 logEvent("stop")
+                currentSession = null
                 accelOut?.close(); gyroOut?.close(); hrOut?.close(); eventsOut?.close()
                 rawOut.values.forEach { it.close() }; rawOut.clear()
                 thread.quitSafely()
