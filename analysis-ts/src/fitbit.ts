@@ -1,5 +1,5 @@
 /**
- * Put a Fitbit export next to the per-second data (TypeScript version of analysis/fitbit.py).
+ * Put a Fitbit export next to the per-second data (TypeScript version of legacy/python/fitbit.py).
  * Expects fitbit.json in the session folder, or a .json/.md/.txt containing the export JSON
  * (text before the first "{" is ignored).
  */

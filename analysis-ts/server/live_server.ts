@@ -3,7 +3,7 @@
  * and the built page from web/dist. Same processing as src/live.ts (live_core.ts).
  *
  *     npm run ui -- --demo
- *     npm run ui -- --serial 192.168.178.35:41773
+ *     npm run ui -- --serial 192.168.1.50:41773
  *     npm run ui -- --replay ../sessions/<session> --speed 4
  *     npm run ui:dev -- --demo        # with Vite hot reload for the UI
  *     --sessions <dir>                # where saved sessions live for the "ECG test" tab (default ../sessions)

@@ -1,12 +1,12 @@
 /**
  * Sleep position from the watch accelerometer, calibrated per person
- * (TypeScript version of analysis/position.py, same model file and outputs).
+ * (TypeScript version of legacy/python/position.py, same model file and outputs).
  *
  *     npx tsx src/position.ts calibrate <session> [<session> ...] [--model pose_model.json] [--wrist left|right]
  *     npx tsx src/position.ts classify  <session> [--model pose_model.json] [--plot]
  *     npx tsx src/position.ts validate  <session> --phone <folder|csv> [--model ...] [--offset-s N] [--plot]
  *
- * The model defaults to analysis/pose_model.json, so Python and TypeScript share the calibration.
+ * The model defaults to sessions/pose_model.json (personal calibration, not committed).
  * Writes positions.csv, position_summary.txt, position_validation.csv/.txt like the Python version.
  * --plot writes an SVG (positions.svg / position_validation.svg) instead of matplotlib's PNG.
  */
@@ -525,7 +525,7 @@ function main() {
   const [cmd, ...args] = process.argv.slice(2);
   const valued = new Set(["--model", "--wrist", "--phone", "--offset-s"]);
   const positional = args.filter((a, i) => !a.startsWith("--") && !valued.has(args[i - 1]));
-  const model = argValue(args, "--model") ?? join(HERE, "..", "..", "analysis", "pose_model.json");
+  const model = argValue(args, "--model") ?? join(HERE, "..", "..", "sessions", "pose_model.json");
   const plot = args.includes("--plot");
   const usage = () => { console.error("Usage: tsx src/position.ts calibrate|classify|validate <session> ... (see header)"); process.exit(2); };
   if (cmd === "calibrate") {

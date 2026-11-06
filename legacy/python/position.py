@@ -428,7 +428,7 @@ def plot_positions(out: Path, tracks):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    default_model = Path(__file__).parent / "pose_model.json"
+    default_model = Path(__file__).resolve().parents[2] / "sessions" / "pose_model.json"
     c = sub.add_parser("calibrate")
     c.add_argument("sessions", type=Path, nargs="+")
     c.add_argument("--model", type=Path, default=default_model)

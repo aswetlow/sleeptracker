@@ -1,5 +1,5 @@
 /**
- * Analysis of one SleepLogger night (TypeScript version of analysis/analyze.py).
+ * Analysis of one SleepLogger night (TypeScript version of legacy/python/analyze.py).
  *
  *     npx tsx src/analyze.ts <session-folder> [--fitbit file.json]
  *

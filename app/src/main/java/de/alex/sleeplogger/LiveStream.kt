@@ -9,7 +9,7 @@ import java.util.concurrent.TimeUnit
 
 /**
  * Live streaming to the laptop over the ADB tunnel:
- *   adb -s <IP:port> reverse tcp:9000 tcp:9000   (analysis/live.py does this automatically)
+ *   adb -s <IP:port> reverse tcp:9000 tcp:9000   (legacy/python/live.py does this automatically)
  * The watch connects to 127.0.0.1:9000; ADB forwards that to the laptop.
  * No laptop -> a connection attempt every 3 s, which costs practically nothing.
  *

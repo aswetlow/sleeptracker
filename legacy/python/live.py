@@ -3,7 +3,7 @@ Live dashboard: watch -> ADB tunnel -> laptop -> browser.
 
 1. Start the app on the watch (preferably "Start + PPG", otherwise there is no pulse wave).
 2. On the laptop:
-       python live.py --serial 192.168.178.35:41773
+       python live.py --serial 192.168.1.50:41773
    The script sets up `adb reverse tcp:9000 tcp:9000`, waits for the watch and opens
    http://localhost:8765 in the browser. The watch connects on its own (within 3 s).
 3. Try it without a watch:  python live.py --demo
@@ -406,7 +406,7 @@ def setup_adb(serial, port):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--serial", help="adb device, e.g. 192.168.178.35:41773")
+    ap.add_argument("--serial", help="adb device, e.g. 192.168.1.50:41773")
     ap.add_argument("--port", type=int, default=9000)
     ap.add_argument("--http", type=int, default=8765)
     ap.add_argument("--channel", type=int, default=None,

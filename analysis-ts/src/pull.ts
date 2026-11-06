@@ -3,7 +3,7 @@
  *   npm run pull                 # new and changed sessions → ../sessions
  *   npm run pull -- --list       # only show what is on the watch
  *   npm run pull -- --delete     # afterwards delete on the watch what is complete and identical locally
- *   npm run pull -- --serial 192.168.178.35:44691 --out D:\sessions
+ *   npm run pull -- --serial 192.168.1.50:44691 --out D:\sessions
  * The watch is found automatically (see lib/adb.ts). A session that is still recording is fetched as it is now
  * and fetched again next time; it is never deleted.
  */

@@ -1,7 +1,7 @@
 /**
- * Live dashboard: watch -> ADB tunnel -> laptop -> browser (TypeScript version of analysis/live.py).
+ * Live dashboard: watch -> ADB tunnel -> laptop -> browser (TypeScript version of legacy/python/live.py).
  *
- *     npx tsx src/live.ts --serial 192.168.178.35:41773
+ *     npx tsx src/live.ts --serial 192.168.1.50:41773
  *     npx tsx src/live.ts --demo
  *     npx tsx src/live.ts --replay ../sessions/<session> [--speed 4]
  *
