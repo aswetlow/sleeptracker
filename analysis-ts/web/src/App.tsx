@@ -279,8 +279,10 @@ function Events({ d }: { d: LiveData }) {
 function Diagnostics({ d }: { d: LiveData }) {
   const g = d.diag;
   const q = Object.entries(g.quality).map(([c, v]) => [Number(c), v] as const);
-  const lag = (v: number | null) => (v == null ? "–" : `${fmt(v, 1)} s`);
-  const lagWarn = (v: number | null) => v != null && v > 3;
+  // a replay feeds old timestamps, so the distance to the laptop clock is meaningless there
+  const replay = d.meta.mode === "replay";
+  const lag = (v: number | null) => (replay ? "replay" : v == null ? "–" : `${fmt(v, 1)} s`);
+  const lagWarn = (v: number | null) => !replay && v != null && v > 3;
   const counts: [string, string][] = [["p", "Pulse wave"], ["a", "Accel"], ["g", "Gyro"], ["h", "Heart rate"], ["e", "Event"], ["malformed", "Malformed"]];
   return (
     <Card className="gap-3">

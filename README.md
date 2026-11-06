@@ -7,6 +7,10 @@ undocumented raw PPG sensor (100 Hz) and the ECG electrode in the crown.
 I built it to check myself for sleep apnea. The whole story, with results from seven nights, is in the blog post:
 [I reverse-engineered my Pixel Watch's raw PPG sensor to check myself for sleep apnea](https://www.swetlow.com/blog/pixel-watch-raw-ppg-sleep-apnea/).
 
+![Live analyzer replaying a real night: pulse wave from the raw PPG sensor with detected beats, heart rate, HRV, breathing rate](docs/live-analyzer.png)
+
+*The live analyzer (`npm run ui`) replaying 15 minutes of one of my nights.*
+
 > **Not a medical device.** This is a developer's experiment. It does not diagnose anything, and its numbers
 > are only checked against Fitbit, which is itself an estimate. If you have symptoms of sleep apnea, talk to a
 > doctor and get a real sleep study.
