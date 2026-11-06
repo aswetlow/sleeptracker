@@ -41,7 +41,12 @@ export function findWatch(serial?: string, log: (s: string) => void = console.lo
   }
   let devs = onlineDevices();
   if (!devs.length) {
-    const targets = mdnsTargets(adb(["mdns", "services"]).out);
+    // a freshly started adb server needs a few seconds before mDNS has seen the watch
+    let targets: string[] = [];
+    for (let i = 0; i < 8 && !targets.length; i++) {
+      if (i) { if (i === 1) log("searching for the watch via mDNS …"); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1000); }
+      targets = mdnsTargets(adb(["mdns", "services"]).out);
+    }
     for (const t of targets) { log(`connecting to ${t} (found via mDNS)`); adb(["connect", t]); }
     devs = onlineDevices();
   }
