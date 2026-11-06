@@ -2,6 +2,7 @@ package de.alex.sleeplogger
 
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 
@@ -16,6 +17,7 @@ import java.util.concurrent.TimeUnit
  *   h,epoch_ms,bpm     heart rate         p,epoch_ms,v0 v1 … raw PPG
  *   e,epoch_ms,text    event (e.g. felt)                      k  keepalive
  *   c,epoch_ms,v0 v1 … raw ECG (ECG test)  l,epoch_ms,v0 …     ECG lead detector
+ *   q,epoch_ms,ch mA … PPG controller (LED current per channel; resent on every connect)
  */
 class LiveStream(private val port: Int = 9000) {
     private val queue = LinkedBlockingQueue<String>(20_000)
@@ -31,6 +33,14 @@ class LiveStream(private val port: Int = 9000) {
         thread.interrupt()
     }
 
+    /** Latest line per key, sent again whenever the laptop (re)connects (state that only changes rarely). */
+    private val sticky = ConcurrentHashMap<String, String>()
+
+    fun sendSticky(key: String, line: String) {
+        sticky[key] = line
+        send(line)
+    }
+
     /** Non-blocking; when the buffer is full (laptop too slow) the line is dropped. */
     fun send(line: String) {
         if (connected) queue.offer(line)
@@ -44,6 +54,7 @@ class LiveStream(private val port: Int = 9000) {
                     s.tcpNoDelay = true
                     val out = s.getOutputStream().bufferedWriter()
                     queue.clear()
+                    sticky.values.forEach { queue.offer(it) }
                     connected = true
                     while (running) {
                         var line = queue.poll(500, TimeUnit.MILLISECONDS)

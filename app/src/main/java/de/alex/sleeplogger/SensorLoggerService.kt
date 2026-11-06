@@ -405,6 +405,7 @@ class SensorLoggerService : Service(), SensorEventListener {
                 val joined = v.take(n).joinToString(" ")
                 w.write("$epochMs,${event.accuracy},$n,$joined\n")
                 if (event.sensor.stringType == "com.google.wear.sensor.ppg") live?.send("p,$epochMs,$joined\n")
+                if (event.sensor.stringType == "com.google.sensor.ppg_controller") live?.sendSticky("q" + v[0].toInt(), "q,$epochMs,$joined\n")
                 rawCount++
                 if (ecgMode) {
                     rawStats.getOrPut(event.sensor.type) { RawStats() }.add(epochMs, v, n)

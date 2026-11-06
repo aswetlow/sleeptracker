@@ -311,6 +311,21 @@ hold 30–45 s, breathe normally for 90 s. Stop if you get dizzy. Afterwards the
 oximeter decides the channels and the curve; only then is a live SpO2 number meaningful, and only within the
 range the test reached.
 
+Result of the first test (2026-11-05): the oximeter went down to 79 %, but the watch stayed in its 6-channel
+**day mode** the whole time, where the candidate v4 is off. The watch switches by itself between 6 values per
+line (day: v1 20 mA, v3 2.35 mA, v5 green, v0/v2/v4 ambient) and 7 values (night: v1 20 mA, v3/v4 4.9 mA,
+v6 green, v0/v2/v5 ambient). Repeat the test only when the card below shows **7 channels**.
+
+**PPG channels card** (live analyzer, below the SpO2 card): mode badge (6/7 channels, time of the last switch),
+per channel the LED current, DC, pulse strength PI and the last 8 s, plus 10 min of DC (relative) and PI.
+LED currents need the current watch app (it streams the PPG controller as `q` lines) or a replay.
+- *Colour test* (which LED is red, which infrared): watch off the wrist, sensor down on white, red and green
+  paper in the dark, 30 s each. Red light: DC stays high on red paper, drops on green. Infrared: stays high on
+  both (most dyes are transparent in infrared; avoid black, carbon ink absorbs infrared). The watch may switch
+  the PPG off when it is not on a wrist; then the counters stop.
+- *Finger test*: fingertip on the sensor with light, constant pressure. PI rises several-fold; with a breath
+  hold and the oximeter on the other hand this shows whether a channel ratio follows SpO2 at all.
+
 ## 11. Sleep position (calibrated)
 The watch sees how the **wrist** lies, not the torso. With the arm under the pillow or on the hip
 the same body position looks completely different. So the model is personal and needs several arm

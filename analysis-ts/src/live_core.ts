@@ -32,6 +32,24 @@ export interface LiveEcg {
 export interface SpO2Point { t: number; r41: number | null; r31: number | null; r43: number | null; pi1: number | null; pi4: number | null; est: number | null; moving: boolean }
 export const SPO2_WIN_S = 8, SPO2_STEP_MS = 2000, SPO2_KEEP = 450;
 
+/**
+ * All PPG channels every 2 s over the last 8 s: DC (mean raw value) and pulse strength PI in % (p95 − p5 of the
+ * band-passed signal / DC; null for channels whose DC is near zero or negative = LED off, ambient light).
+ * `n` = number of values per PPG line (7 = night LED config, 6 = day config; the watch switches by itself).
+ */
+export interface ChanPoint { t: number; n: number; dc: (number | null)[]; pi: (number | null)[] }
+export interface LiveChannels {
+  width: number;
+  history: ChanPoint[];
+  /** last 8 s per channel, band-passed and divided by DC (in %), 25 Hz; null for ambient channels */
+  trace: { t: number[]; y: (number | null)[][] };
+  /** LED current per channel in mA from the PPG controller (needs the watch app that streams "q" lines, or replay) */
+  led: Record<number, number>;
+  /** [time, new width] whenever the number of values per line changes */
+  modes: [number, number][];
+}
+const CH_MAX = 7, DC_MIN = 5000;
+
 /** Fixed-length ring buffer (like deque(maxlen)). */
 class Ring<T> {
   private a: T[] = [];
@@ -76,6 +94,12 @@ export class State {
   spo2 = new Ring<SpO2Point>(SPO2_KEEP);
   oximeter = new Ring<[number, number]>(1000);
   private spo2Last = 0;
+  chans = new Ring<ChanPoint>(SPO2_KEEP);
+  chTrace: LiveChannels["trace"] = { t: [], y: [] };
+  led: Record<number, number> = {};
+  modes: [number, number][] = [];
+  private chansLast = 0;
+  private width = 0;
 
   constructor(public fixedCh: number | null, private rec: WriteStream | null) {
     this.ch = fixedCh ?? 6;
@@ -102,6 +126,7 @@ export class State {
       const vals = parts[2].trim().split(/\s+/).slice(0, 7).map(Number);
       if (vals.some(Number.isNaN)) return bad("number");
       if (vals.length <= this.ch) this.counts.p_too_short = (this.counts.p_too_short ?? 0) + 1;
+      if (vals.length !== this.width) { this.width = vals.length; this.modes.push([t, vals.length]); if (this.modes.length > 50) this.modes.shift(); }
       while (vals.length < 7) vals.push(NaN);
       this.ppgT.push(t); this.ppgY.push(vals);
     } else if (kind === "a" || kind === "g") {
@@ -116,6 +141,9 @@ export class State {
       const vals = parts[2].trim().split(/\s+/).map(Number);
       if (vals.some(Number.isNaN)) return bad("number");
       this.ecgT.push(t); this.ecgY.push(vals);
+    } else if (kind === "q") {           // PPG controller: "<channel> <LED mA> …"
+      const v = parts[2].trim().split(/\s+/).map(Number);
+      if (v.length >= 2 && Number.isFinite(v[0]) && Number.isFinite(v[1])) this.led[v[0]] = Math.round(v[1] * 100) / 100;
     } else if (kind === "l") {           // ECG lead detector
       this.lead = { t, value: parts[2].trim() };
     } else if (kind === "e" && parts[2].startsWith("felt")) this.felt.push(t);
@@ -219,6 +247,36 @@ export class State {
     });
   }
 
+  private processChannels(pt: number[], raw: number[][]) {
+    const tEnd = pt[pt.length - 1];
+    if (tEnd - this.chansLast < SPO2_STEP_MS) return;
+    this.chansLast = tEnd;
+    let i0 = pt.length - 1;
+    while (i0 > 0 && pt[i0 - 1] > tEnd - SPO2_WIN_S * 1000) i0--;
+    const rows = raw.slice(i0), ts = pt.slice(i0);
+    if (rows.length < PPG_FS * (SPO2_WIN_S - 2)) return;
+    const n = Math.max(...rows.slice(-50).map((r) => r.filter(Number.isFinite).length));
+    const dc: (number | null)[] = [], pi: (number | null)[] = [], tr: (number | null)[][] = [];
+    const step = 4, tt: number[] = [];
+    for (let i = PPG_FS; i < rows.length - PPG_FS; i += step) tt.push(ts[i]);
+    for (let c = 0; c < CH_MAX; c++) {
+      const x = rows.map((r) => r[c]);
+      if (x.some((v) => !Number.isFinite(v))) { dc.push(null); pi.push(null); tr.push([]); continue; }
+      const m = mean(x);
+      dc.push(Math.round(m));
+      if (m < DC_MIN) { pi.push(null); tr.push([]); continue; }
+      const y = sosfiltfilt(this.sosPpg, x.map((v) => v - m));
+      const inner = Array.from(y.subarray(PPG_FS, y.length - PPG_FS));
+      const s = inner.slice().sort((a, b) => a - b);
+      pi.push(s.length ? Math.round(((s[Math.floor(0.95 * (s.length - 1))] - s[Math.floor(0.05 * (s.length - 1))]) / m) * 1e6) / 1e4 : null);
+      const yy: number[] = [];
+      for (let i = PPG_FS; i < rows.length - PPG_FS; i += step) yy.push(Math.round((y[i] / m) * 1e6) / 1e4);
+      tr.push(yy);
+    }
+    this.chans.push({ t: tEnd, n, dc, pi });
+    this.chTrace = { t: tt, y: tr };
+  }
+
   process() {
     if (this.ecgT.length) this.processEcg();
     let pt = this.ppgT.items.slice(), raw = this.ppgY.items.slice();
@@ -229,7 +287,7 @@ export class State {
       const o = pt.map((_, i) => i).sort((a, b) => pt[a] - pt[b] || a - b);
       pt = o.map((i) => pt[i]); raw = o.map((i) => raw[i]);
     }
-    if (pt.length > PPG_FS * SPO2_WIN_S) this.processSpo2(pt, raw);
+    if (pt.length > PPG_FS * SPO2_WIN_S) { this.processSpo2(pt, raw); this.processChannels(pt, raw); }
     if (pt.length > PPG_FS * 3) {
       if (this.fixedCh === null && Date.now() - this.chChecked > 5000) this.pickChannel(raw);
       const keep = raw.map((r, i) => i).filter((i) => Number.isFinite(raw[i][this.ch]));
@@ -407,6 +465,9 @@ export class State {
       clock_offset_ms: this.clockOffsetMs,
       spo2: this.spo2.items,
       oximeter: this.oximeter.items,
+      channels: this.chans.length
+        ? ({ width: this.width, history: this.chans.items, trace: this.chTrace, led: { ...this.led }, modes: this.modes } satisfies LiveChannels)
+        : null,
       numbers: {
         hr_ppg: clean.length >= 3 ? round1(60000 / median(clean.slice(-10))) : null,
         hr_sensor: hrLast ? hrLast[1] : null,
@@ -503,8 +564,8 @@ export function replayFeeder(state: State, session: string, speed: number) {
     const d = readNumericCsv(join(session, "hr.csv"), ["epoch_ms", "bpm"]);
     for (let i = 0; i < d.epoch_ms.length; i++) rows.push([d.epoch_ms[i], `h,${d.epoch_ms[i]},${d.bpm[i]}`]);
   }
-  // raw files: epoch_ms,accuracy,n,"v0 v1 …" -> p (PPG), c (ECG test), l (ECG lead detector)
-  for (const [name, kind] of [["raw_ppg.csv", "p"], ["raw_ecg.csv", "c"], ["raw_ecg_lead.csv", "l"]] as const) {
+  // raw files: epoch_ms,accuracy,n,"v0 v1 …" -> p (PPG), q (PPG controller), c (ECG test), l (ECG lead detector)
+  for (const [name, kind] of [["raw_ppg.csv", "p"], ["raw_ppg_ctrl.csv", "q"], ["raw_ecg.csv", "c"], ["raw_ecg_lead.csv", "l"]] as const) {
     const pp = join(session, name);
     if (!existsSync(pp)) continue;
     for (const line of readFileSync(pp, "latin1").split("\n").slice(1)) {
@@ -516,7 +577,8 @@ export function replayFeeder(state: State, session: string, speed: number) {
   for (const e of readEvents(session)) if (e.event === "felt") rows.push([e.t, `e,${e.t},felt`]);
   rows.sort((a, b) => a[0] - b[0]);
   if (!rows.length) { console.error("replay: no data found"); return; }
-  const startWall = Date.now(), startT = rows[0][0];
+  // the PPG controller logs its config shortly before the recording starts: feed that at once, don't wait for it
+  const startWall = Date.now(), startT = (rows.find((r) => !r[1].startsWith("q,")) ?? rows[0])[0];
   let i = 0;
   const timer = setInterval(() => {
     const due = startT + (Date.now() - startWall) * speed;
