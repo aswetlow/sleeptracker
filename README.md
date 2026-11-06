@@ -106,3 +106,7 @@ the raw channels in the sensor mode an app can control, and nothing here replace
 
 Written together with Claude (Opus 5.5). Claude wrote most of the code; I decided what to build and test,
 and every recording comes from my own nights.
+
+## License
+
+MIT, see [LICENSE](LICENSE).
