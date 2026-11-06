@@ -22,7 +22,8 @@ function roles(c: LiveChannels): Role[] {
     out.push("LED");
     if ((last.pi[i] ?? 0) > bestPi) { bestPi = last.pi[i]!; best = i; }
   }
-  if (best >= 0) out[best] = "green";
+  // only the full LED configs have a green channel; with 1–2 LEDs (off the wrist) the strongest one is not green
+  if (best >= 0 && c.width >= 6) out[best] = "green";
   return out;
 }
 
@@ -59,6 +60,7 @@ export function ChannelsCard({ c }: { c: LiveChannels }) {
     return o;
   });
   const night = c.width >= 7;
+  const mode = night ? "night mode" : c.width === 6 ? "day mode" : "reduced (off wrist?)";
   const xAxis = <XAxis {...axis} dataKey="t" type="number" domain={[end - SPAN, end]} allowDataOverflow tickFormatter={(v: number) => clock(v).slice(0, 5)} />;
   const legend = led.map((i) => ({ label: `v${i}`, color: col(i), line: true }));
   return (
@@ -67,7 +69,7 @@ export function ChannelsCard({ c }: { c: LiveChannels }) {
         <CardTitle className="flex items-center gap-2"><Layers className="size-4 text-muted-foreground" />PPG channels</CardTitle>
         <CardDescription>All raw channels, every 2 s over 8 s. PI = pulse strength in % of DC. Ambient = LED off.</CardDescription>
         <CardAction className="flex flex-wrap gap-1.5">
-          <Badge variant={night ? "default" : "warning"}>{c.width} channels · {night ? "night mode" : "day mode"}</Badge>
+          <Badge variant={night ? "default" : "warning"}>{c.width} channels · {mode}</Badge>
           {c.modes.length > 1 && <Badge variant="outline">last switch {clock(c.modes[c.modes.length - 1][0])}</Badge>}
         </CardAction>
       </CardHeader>
