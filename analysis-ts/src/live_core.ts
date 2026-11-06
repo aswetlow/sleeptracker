@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { autocorr, butterBandpass, findPeaks, peakProminences, principalComponent, sosfiltfilt } from "./lib/dsp.ts";
 import { detectR } from "./ecg_probe.ts";
 import { findWatch } from "./lib/adb.ts";
+import { hrv, type Hrv } from "./lib/hrv.ts";
 import { readEvents, readNumericCsv } from "./lib/io.ts";
 import { mean, median, std } from "./lib/stats.ts";
 
@@ -22,6 +23,8 @@ export interface LiveEcg {
   looksEcg: boolean; why: string; events: number; lead: { t: number; value: string } | null;
   /** R-R intervals of the whole test so far (time of the second beat, ms). */
   rr: { t: number[]; rr: number[] };
+  /** HRV over the whole test so far */
+  hrv: Hrv | null;
 }
 
 /**
@@ -90,7 +93,7 @@ export class State {
   ecgT = new Ring<number>(ECG_KEEP);
   ecgY = new Ring<number[]>(ECG_KEEP);
   lead: { t: number; value: string } | null = null;
-  ecgF: Omit<LiveEcg, "events" | "lead" | "rr"> | null = null;
+  ecgF: Omit<LiveEcg, "events" | "lead" | "rr" | "hrv"> | null = null;
   ecgPeaks = new Ring<number>(600);
   spo2 = new Ring<SpO2Point>(SPO2_KEEP);
   oximeter = new Ring<[number, number]>(1000);
@@ -461,7 +464,7 @@ export class State {
       activity: this.activity,
       ecg: this.counts.c || this.lead
         ? ({ ...(this.ecgF ?? { t: [], y: [], peaks: [], hr: null, ch: 0, fs: 0, looksEcg: false, why: "waiting for data" }),
-          events: this.counts.c ?? 0, lead: this.lead, rr: this.ecgRr() } satisfies LiveEcg)
+          events: this.counts.c ?? 0, lead: this.lead, ...((rr) => ({ rr, hrv: rr.rr.length >= 11 ? hrv(rr.rr.slice(1)) : null }))(this.ecgRr()) } satisfies LiveEcg)
         : null,
       clock_offset_ms: this.clockOffsetMs,
       spo2: this.spo2.items,

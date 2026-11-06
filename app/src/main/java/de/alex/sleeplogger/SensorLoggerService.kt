@@ -53,11 +53,11 @@ class SensorLoggerService : Service(), SensorEventListener {
             "com.google.sensor.heart_rate_extended" to "raw_hr_ext.csv",
             "com.google.sensor.ppg_controller" to "raw_ppg_ctrl.csv",
         )
-        // ECG test (experimental): undocumented ECG sensors of the Pixel Watch, 60 s, finger on the crown
+        // ECG test (experimental): undocumented ECG sensors of the Pixel Watch, 150 s (≈8 s settling + 2 min for HRV), finger on the crown
         const val EXTRA_ECG_TEST = "ecg_test"
         // SpO2 calibration test: PPG recording with a large clock on the screen (film it next to an oximeter)
         const val EXTRA_SPO2_TEST = "spo2_test"
-        const val ECG_TEST_MS = 60_000L
+        const val ECG_TEST_MS = 150_000L
         const val ECG_TYPE = "com.google.sensor.ecg"
         const val ECG_LEAD_TYPE = "com.google.sensor.ecg_lead_detector"
         const val PPG_TYPE = "com.google.wear.sensor.ppg"
@@ -314,7 +314,7 @@ class SensorLoggerService : Service(), SensorEventListener {
     }
 
     /**
-     * ECG test: only heart rate, raw PPG and the two ECG sensors, 60 s, then stop.
+     * ECG test: only heart rate, raw PPG and the two ECG sensors, ECG_TEST_MS, then stop.
      * The ECG sensors are registered as fast as possible (0 µs, no batching), non-wake-up variant first.
      */
     private fun startEcgTest(dir: File, all: List<Sensor>) {
@@ -463,7 +463,7 @@ class SensorLoggerService : Service(), SensorEventListener {
         )
         return Notification.Builder(this, CHANNEL_ID)
             .setContentTitle("SleepLogger running")
-            .setContentText(if (ecg) "ECG test (60 s)" else "Recording movement + heart rate")
+            .setContentText(if (ecg) "ECG test (${ECG_TEST_MS / 1000} s)" else "Recording movement + heart rate")
             .setSmallIcon(android.R.drawable.ic_menu_compass)
             .setOngoing(true)
             .setContentIntent(open)

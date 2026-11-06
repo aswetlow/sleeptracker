@@ -6,9 +6,29 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import type { EcgReport } from "../../../src/ecg_probe.ts";
+import type { EcgReport, HrvRow } from "../../../src/ecg_probe.ts";
+import type { Hrv } from "../../../src/lib/hrv.ts";
 import type { LiveEcg } from "../../../src/live_core.ts";
 import { clock, cn, fmt } from "@/lib/utils";
+
+/** RMSSD / SDNN / extrasystoles with progress towards the standard 2 min. */
+function HrvBlock({ h }: { h: Hrv | null }) {
+  const pctDone = h ? Math.min(100, (h.durationS / 120) * 100) : 0;
+  return (
+    <div className="rounded-lg border p-4">
+      <div className="text-xs text-muted-foreground">HRV from ECG (whole test)</div>
+      <div className="flex items-baseline gap-1">
+        <span className={cn("text-4xl font-semibold tabular-nums", !h?.valid && "text-muted-foreground")}>{h?.rmssd != null ? fmt(h.rmssd, 1) : "–"}</span>
+        <span className="text-sm text-muted-foreground">ms RMSSD</span>
+      </div>
+      <div className="font-mono text-xs tabular-nums text-muted-foreground">
+        SDNN {h?.sdnn != null ? fmt(h.sdnn, 1) : "–"} ms · ES {h?.ectopic ?? 0} · {h ? `${h.nn}/${h.n}` : "0"} NN
+      </div>
+      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted"><div className={cn("h-full", h?.valid ? "bg-[var(--chart-4)]" : "bg-[var(--chart-2)]")} style={{ width: `${pctDone}%` }} /></div>
+      <div className="mt-1 text-xs text-muted-foreground">{h ? (h.valid ? `${Math.round(h.durationS)} s · valid` : h.note) : "waiting for 10 beats"}</div>
+    </div>
+  );
+}
 
 const Disclaimer = () => (
   <p className="text-xs text-muted-foreground">Experimental. Not a medical device, no diagnosis.</p>
@@ -83,7 +103,8 @@ export function LiveEcgCard({ e, now }: { e: LiveEcg; now: number }) {
             <div className={cn("text-5xl font-semibold tabular-nums", e.hr != null && e.looksEcg && "text-foreground", !e.looksEcg && "text-muted-foreground")}>{e.hr != null ? fmt(e.hr) : "–"}<span className="ml-1 text-base font-normal text-muted-foreground">bpm</span></div>
             <div className="text-xs text-muted-foreground">median of the last 10 s{lastRr != null ? ` · last RR ${lastRr} ms` : ""}</div>
           </div>
-          <div className="text-xs text-muted-foreground">{e.rr.rr.length} RR intervals so far</div>
+          <HrvBlock h={e.hrv} />
+          <div className="text-xs text-muted-foreground">{e.rr.rr.length} RR intervals so far. Breathe normally; slow deep breathing inflates RMSSD.</div>
         </div>
         {e.rr.rr.length > 1 && <div className="lg:col-span-2"><div className="mb-1 text-sm font-medium">RR intervals of this test</div><RrDots t={e.rr.t} rr={e.rr.rr} /></div>}
         <div className="lg:col-span-2"><Disclaimer /></div>
@@ -107,6 +128,59 @@ function Stat({ label, value, hint }: { label: string; value: string; hint?: str
         <div className="text-xs text-muted-foreground">{label}</div>
         <div className="text-2xl font-semibold tabular-nums">{value}</div>
         {hint && <div className="truncate text-xs text-muted-foreground">{hint}</div>}
+      </CardContent>
+    </Card>
+  );
+}
+
+/** HRV of all ECG tests (morning measurements) as a trend. */
+function HrvHistoryCard({ onPick }: { onPick: (s: string) => void }) {
+  const [rows, setRows] = useState<HrvRow[] | null>(null);
+  useEffect(() => { fetch("/api/ecg/hrv").then((r) => r.json()).then((j) => setRows(j.rows ?? [])).catch(() => setRows([])); }, []);
+  if (!rows?.length) return null;
+  const pts = rows.map((r) => ({ t: r.start, rmssd: r.valid ? r.rmssd : null, rough: r.valid ? null : r.rmssd, hr: r.hr }));
+  const day = (t: number) => new Date(t).toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit" });
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2"><HeartPulse className="size-4 text-muted-foreground" />HRV history (ECG tests)</CardTitle>
+        <CardDescription>RMSSD per test. Comparable only when measured the same way: right after waking, lying, 2 min, normal breathing.</CardDescription>
+        <CardAction><Legend items={[{ label: "RMSSD ≥ 2 min", color: "var(--chart-1)" }, { label: "shorter (rough)", color: "var(--chart-6)" }]} /></CardAction>
+      </CardHeader>
+      <CardContent className="grid gap-4">
+        {rows.length > 1 && (
+          <ChartBox className="h-44">
+            <ComposedChart margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
+              <CartesianGrid {...grid} />
+              <XAxis {...axis} dataKey="t" type="number" domain={["dataMin", "dataMax"]} tickFormatter={day} />
+              <YAxis {...axis} type="number" domain={["auto", "auto"]} width={40} />
+              <Tooltip content={({ payload }) => payload?.length ? (
+                <ChartTip title={`${day(Number(payload[0].payload?.t))} ${clock(Number(payload[0].payload?.t)).slice(0, 5)}`} rows={payload.map((p) => ({ label: String(p.name), value: `${fmt(Number(p.value), 1)} ms`, color: String(p.color) }))} />) : null} />
+              <Scatter data={pts} dataKey="rmssd" name="RMSSD" fill="var(--chart-1)" isAnimationActive={false} />
+              <Scatter data={pts} dataKey="rough" name="RMSSD (short)" fill="var(--chart-6)" isAnimationActive={false} />
+            </ComposedChart>
+          </ChartBox>
+        )}
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm tabular-nums">
+            <thead className="text-xs text-muted-foreground"><tr className="text-left">
+              <th className="py-1 pr-3 font-normal">Test</th><th className="pr-3 font-normal">Duration</th><th className="pr-3 font-normal">HR</th>
+              <th className="pr-3 font-normal">RMSSD</th><th className="pr-3 font-normal">SDNN</th><th className="pr-3 font-normal">ES</th><th className="font-normal">Note</th></tr></thead>
+            <tbody>
+              {rows.slice().reverse().map((r) => (
+                <tr key={r.session} className="cursor-pointer border-t hover:bg-muted/50" onClick={() => onPick(r.session)}>
+                  <td className="py-1 pr-3 font-mono">{day(r.start)} {clock(r.start).slice(0, 5)}</td>
+                  <td className="pr-3">{Math.round(r.durationS)} s</td>
+                  <td className="pr-3">{r.hr != null ? fmt(r.hr) : "–"}</td>
+                  <td className={cn("pr-3 font-medium", !r.valid && "text-muted-foreground")}>{r.rmssd != null ? fmt(r.rmssd, 1) : "–"}</td>
+                  <td className="pr-3">{r.sdnn != null ? fmt(r.sdnn, 1) : "–"}</td>
+                  <td className="pr-3">{r.ectopic}</td>
+                  <td className="text-xs text-muted-foreground">{r.valid ? "" : r.note}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </CardContent>
     </Card>
   );
@@ -142,7 +216,7 @@ export function EcgTestView() {
         <CardHeader>
           <CardTitle className="flex items-center gap-2"><FolderOpen className="size-4 text-muted-foreground" />ECG test</CardTitle>
           <CardDescription>
-            Sessions from the watch's "ECG test" button (60 s, finger of the other hand on the crown).
+            Sessions from the watch's "ECG test" button (150 s, finger of the other hand on the crown).
             {list && <> Folder: <code className="font-mono">{list.dir}</code></>}
           </CardDescription>
           <CardAction className="flex items-center gap-2">
@@ -161,6 +235,8 @@ export function EcgTestView() {
           </CardContent>
         )}
       </Card>
+
+      <HrvHistoryCard onPick={setName} />
 
       {err && <Alert variant="destructive"><AlertTriangle /><AlertTitle>Could not load the report</AlertTitle><AlertDescription>{err}</AlertDescription></Alert>}
       {rep && <EcgReportView r={rep} />}
@@ -183,12 +259,13 @@ function EcgReportView({ r }: { r: EcgReport }) {
         <AlertDescription>{r.verdictText}</AlertDescription>
       </Alert>
 
-      <div className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-6">
+      <div className="grid grid-cols-2 gap-4 md:grid-cols-4 xl:grid-cols-7">
         <Stat label="ECG events" value={(r.ecg?.events ?? 0).toLocaleString("en-GB")} hint={r.ecg ? `${fmt(r.ecg.durationS, 1)} s` : "no file"} />
         <Stat label="Rate" value={r.ecg ? `${fmt(r.ecg.eventRateHz, 0)} Hz` : "–"} hint={r.ecg ? `values/event ${Object.keys(r.ecg.valuesPerEvent).join(", ") || "–"}` : undefined} />
         <Stat label="HR from ECG" value={r.best?.hr != null ? `${fmt(r.best.hr)} bpm` : "–"} hint={r.best ? `${r.best.label}, ${rrOk.length} RR` : undefined} />
         <Stat label="HR sensor" value={hrSensor != null ? `${fmt(hrSensor)} bpm` : "–"} hint="watch, same period" />
         <Stat label="HR from PPG" value={r.ppg?.hr != null ? `${fmt(r.ppg.hr)} bpm` : "–"} hint={r.ppg ? `${r.ppg.t.length} clean beats` : "no raw_ppg.csv"} />
+        <Stat label="RMSSD (ECG)" value={r.hrv?.rmssd != null ? `${fmt(r.hrv.rmssd, 1)} ms` : "–"} hint={r.hrv ? (r.hrv.valid ? `SDNN ${fmt(r.hrv.sdnn ?? NaN, 1)} ms · ES ${r.hrv.ectopic}` : r.hrv.note) : undefined} />
         <Stat label="R → pulse wave" value={r.ppg?.ptt != null ? `${fmt(r.ppg.ptt)} ms` : "–"} hint={r.ppg?.ptt != null ? `median, ${r.ppg.matched} pairs` : undefined} />
       </div>
 

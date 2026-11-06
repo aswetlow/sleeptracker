@@ -68,7 +68,7 @@ class MainActivity : ComponentActivity() {
         toggle = Button(this).apply { setOnClickListener { onToggle(Mode.NORMAL) } }
         // additionally record the raw PPG sensors (first as a short test, data volume unknown)
         rawButton = Button(this).apply { text = "Start + PPG"; setOnClickListener { onToggle(Mode.RAW) } }
-        // experimental: 60 s with the undocumented ECG sensors, finger of the other hand on the crown
+        // experimental: 150 s (2 min usable for HRV) with the undocumented ECG sensors, finger of the other hand on the crown
         ecgButton = Button(this).apply { text = "ECG test"; setOnClickListener { onToggle(Mode.ECG) } }
         // SpO2 calibration: PPG recording, large clock, screen stays on (film watch + oximeter together)
         spo2Button = Button(this).apply { text = "SpO2 test"; setOnClickListener { onToggle(Mode.SPO2) } }

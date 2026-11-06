@@ -11,7 +11,7 @@
 import express from "express";
 import { existsSync, readdirSync, statSync, type WriteStream } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { analyzeEcg } from "../src/ecg_probe.ts";
+import { analyzeEcg, hrvHistory, writeHrvHistory } from "../src/ecg_probe.ts";
 import { fileURLToPath } from "node:url";
 import { argValue } from "../src/lib/io.ts";
 import { State, demoFeeder, openBrowser, openRecorder, replayFeeder, setupAdb, startProcessing, tcpServer } from "../src/live_core.ts";
@@ -61,6 +61,10 @@ async function main() {
       }).sort().reverse();
     } catch { /* folder missing */ }
     res.json({ dir: sessionsDir, sessions: names });
+  });
+  // HRV of every ECG test (morning measurements), oldest first; also written to <sessions>/hrv_ecg.csv
+  app.get("/api/ecg/hrv", (_req, res) => {
+    try { writeHrvHistory(sessionsDir); res.json({ rows: hrvHistory(sessionsDir) }); } catch (e) { res.status(500).json({ error: (e as Error).message }); }
   });
   app.get("/api/ecg/sessions/:name", (req, res) => {
     const name = req.params.name;

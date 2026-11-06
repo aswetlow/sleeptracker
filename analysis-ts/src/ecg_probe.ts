@@ -13,7 +13,8 @@
  * Not a medical device, no diagnosis. Without the vendor's validation this only answers
  * "does a third-party app get usable raw data?".
  */
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { hrv, type Hrv } from "./lib/hrv.ts";
 import { basename, join } from "node:path";
 import { butterBandpass, findPeaks, sosfiltfilt } from "./lib/dsp.ts";
 import { f, hms, readEvents, writeCsv } from "./lib/io.ts";
@@ -175,7 +176,14 @@ export function detectR(x: ArrayLike<number>, fs: number): RDetect {
   const peaks = segPeaks.map((p) => p + a);
   const y = new Float64Array(x.length).fill(NaN);
   y.set(ys, a);
-  const rr = peaks.slice(1).map((p, i) => ((p - peaks[i]) * 1000) / fs);
+  // sub-sample R timing (parabola through the peak and its neighbours): 250 Hz alone would quantise RR to 4 ms
+  const refined = segPeaks.map((p) => {
+    const y0 = ys[p - 1], y1 = ys[p], y2 = ys[p + 1];
+    const den = y0 - 2 * y1 + y2;
+    const d = p > 0 && p < ys.length - 1 && den < 0 ? (0.5 * (y0 - y2)) / den : 0;
+    return p + a + Math.max(-0.5, Math.min(0.5, d));
+  });
+  const rr = refined.slice(1).map((p, i) => Math.round(((p - refined[i]) * 1000) / fs * 10) / 10);
   const ok = rr.filter((v) => v >= RR_MIN && v <= RR_MAX);
   const succ = ok.slice(1).map((v, i) => Math.abs(v - ok[i]) / ok[i]);
   const stable = succ.length ? median(succ) : Infinity;
@@ -197,6 +205,8 @@ export function detectR(x: ArrayLike<number>, fs: number): RDetect {
 // ---------- report ----------
 
 export interface EcgReport {
+  /** HRV of the whole test (ECG RR intervals); null without a usable ECG */
+  hrv: Hrv | null;
   session: string;
   verdict: "no_file" | "blocked" | "constant" | "ecg" | "not_ecg";
   verdictText: string;
@@ -231,7 +241,7 @@ function candidates(r: RawFile, st: FileStats): Candidate[] {
 
 export function analyzeEcg(session: string): EcgReport {
   const rep: EcgReport = {
-    session: basename(session), verdict: "no_file", verdictText: "", lines: [], registration: [],
+    hrv: null, session: basename(session), verdict: "no_file", verdictText: "", lines: [], registration: [],
     ecg: null, lead: null, channels: [], best: null, snippet: null,
     rr: { t: [], rr: [] }, hrSensor: { t: [], bpm: [] }, ppg: null, leadSeries: { t: [], v: [] }, leadChanges: [],
   };
@@ -300,6 +310,7 @@ export function analyzeEcg(session: string): EcgReport {
             : `Data arrives, but no channel looks like an ECG (best: ${c.label}, ${d.why}). Finger on the crown during the whole test?`;
           const peakT = d.peaks.map(c.tOf);
           d.peaks.slice(1).forEach((p, i) => { rep.rr.t.push(peakT[i + 1]); rep.rr.rr.push(d.rr[i]); });
+          if (d.looksEcg) rep.hrv = hrv(d.rr);
           // 10-s snippet: the window with the most plausible RR intervals
           const win = Math.round(10 * c.fs);
           let s0 = Math.max(0, Math.floor((c.x.length - win) / 2)), bestN = -1;
@@ -364,6 +375,11 @@ export function analyzeEcg(session: string): EcgReport {
     const rr = rep.rr.rr.filter((v) => v >= RR_MIN && v <= RR_MAX);
     head.push(`ECG heart rate ${f(rep.best.hr, 1)} bpm from ${rr.length} RR intervals (${f(Math.min(...rr))}–${f(Math.max(...rr))} ms)`);
   }
+  if (rep.hrv) {
+    const h = rep.hrv;
+    head.push(`HRV (ECG, ${f(h.durationS)} s, ${h.nn} normal intervals): RMSSD ${f(h.rmssd ?? NaN, 1)} ms, SDNN ${f(h.sdnn ?? NaN, 1)} ms, ` +
+      `pNN50 ${f(h.pnn50 ?? NaN, 1)} %, extrasystoles ${h.ectopic}, artefacts ${h.artefacts} – ${h.note}`);
+  }
   if (rep.hrSensor.bpm.length) head.push(`Watch heart-rate sensor in the same period: ${f(mean(rep.hrSensor.bpm), 1)} bpm`);
   if (rep.ppg) {
     head.push(`PPG: ${rep.ppg.t.length} clean beats` + (rep.ppg.hr != null ? `, ${f(rep.ppg.hr, 1)} bpm` : "") +
@@ -419,9 +435,64 @@ export function reportSvg(r: EcgReport): string {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${y + 10}" font-family="sans-serif"><rect width="100%" height="100%" fill="#fff"/>${parts.join("")}</svg>\n`;
 }
 
+// ---------- HRV history over all ECG tests ----------
+
+export interface HrvRow {
+  session: string; start: number; durationS: number; hr: number | null; rmssd: number | null; sdnn: number | null;
+  pnn50: number | null; ectopic: number; nn: number; valid: boolean; note: string;
+}
+const histCache = new Map<string, { mtime: number; row: HrvRow | null }>();
+
+/** One row per session with a usable ECG (cached by raw_ecg.csv mtime), oldest first. */
+export function hrvHistory(sessionsDir: string): HrvRow[] {
+  const rows: HrvRow[] = [];
+  let names: string[] = [];
+  try { names = readdirSync(sessionsDir).sort(); } catch { return rows; }
+  for (const name of names) {
+    const file = join(sessionsDir, name, "raw_ecg.csv");
+    if (!existsSync(file)) continue;
+    const mtime = statSync(file).mtimeMs;
+    const hit = histCache.get(file);
+    let row: HrvRow | null;
+    if (hit && hit.mtime === mtime) row = hit.row;
+    else {
+      row = null;
+      try {
+        const r = analyzeEcg(join(sessionsDir, name));
+        if (r.hrv && r.rr.t.length) {
+          const h = r.hrv;
+          row = { session: name, start: r.rr.t[0], durationS: h.durationS, hr: h.hr, rmssd: h.rmssd, sdnn: h.sdnn, pnn50: h.pnn50, ectopic: h.ectopic, nn: h.nn, valid: h.valid, note: h.note };
+        }
+      } catch { /* unreadable session */ }
+      histCache.set(file, { mtime, row });
+    }
+    if (row) rows.push(row);
+  }
+  return rows;
+}
+
+export function writeHrvHistory(sessionsDir: string): string {
+  const rows = hrvHistory(sessionsDir);
+  const out = join(sessionsDir, "hrv_ecg.csv");
+  writeCsv(out, ["session", "start", "duration_s", "hr", "rmssd_ms", "sdnn_ms", "pnn50", "extrasystoles", "nn", "valid", "note"],
+    rows.map((r) => [r.session, new Date(r.start).toISOString(), r.durationS, r.hr ?? "", r.rmssd ?? "", r.sdnn ?? "", r.pnn50 ?? "", r.ectopic, r.nn, r.valid ? "yes" : "no", r.note]));
+  return out;
+}
+
 function main() {
-  const session = process.argv.slice(2).find((a) => !a.startsWith("--"));
-  if (!session) { console.error("Usage: tsx src/ecg_probe.ts <session>"); process.exit(2); }
+  const args = process.argv.slice(2);
+  const hi = args.indexOf("--history");
+  if (hi >= 0) {
+    const dir = args[hi + 1] ?? join("..", "sessions");
+    const out = writeHrvHistory(dir);
+    for (const r of hrvHistory(dir)) {
+      console.log(`${r.session}  ${hms(r.start)}  ${String(Math.round(r.durationS)).padStart(4)} s  HR ${f(r.hr ?? NaN, 1)}  RMSSD ${f(r.rmssd ?? NaN, 1)}  SDNN ${f(r.sdnn ?? NaN, 1)}  ES ${r.ectopic}  ${r.valid ? "" : "(" + r.note + ")"}`);
+    }
+    console.log(`Table: ${out}`);
+    return;
+  }
+  const session = args.find((a) => !a.startsWith("--"));
+  if (!session) { console.error("Usage: tsx src/ecg_probe.ts <session>   |   --history [sessions dir]"); process.exit(2); }
   const r = analyzeEcg(session);
   const text = r.lines.join("\n");
   console.log(text);

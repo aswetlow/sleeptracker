@@ -309,6 +309,14 @@ peaks picked from noise reach ~0.4. Without that check the first version took v2
 If the sensor delivers nothing (`registered=false`, 0 events, or only constant values), that is the answer:
 a third-party app gets no ECG. No workarounds beyond that. Not a medical device, no diagnosis.
 
+**HRV from the ECG (morning measurement).** The ECG test now runs 150 s (≈8 s settling + 2 min). The live ECG card
+shows RMSSD, SDNN and extrasystoles of the whole test with a progress bar to the standard 2 min; the tab
+"ECG test" shows the history of all ECG tests (also written to `sessions/hrv_ecg.csv`, or
+`npx tsx src/ecg_probe.ts --history ..\sessions`). R peaks are timed to a fraction of a sample. Only comparable
+when done the same way every day: right after waking, lying, finger of the other hand on the crown, **normal
+breathing** (slow deep breathing raises RMSSD through respiratory sinus arrhythmia and measures the technique,
+not recovery).
+
 ## 10b. SpO2 calibration test (experimental)
 The watch has no SpO2 sensor for apps, but the raw PPG has three LED channels besides green (v1 at 20 mA,
 v3/v4 at 4.9 mA, see `raw_ppg_ctrl.csv`). Which of them is red and which infrared is not known. The live
