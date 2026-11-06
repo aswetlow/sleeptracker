@@ -22,8 +22,11 @@ function roles(c: LiveChannels): Role[] {
     out.push("LED");
     if ((last.pi[i] ?? 0) > bestPi) { bestPi = last.pi[i]!; best = i; }
   }
-  // only the full LED configs have a green channel; with 1–2 LEDs (off the wrist) the strongest one is not green
-  if (best >= 0 && c.width >= 6) out[best] = "green";
+  // green = last channel of the full configs (v6 in night mode, v5 in day mode, confirmed by the nights);
+  // the strongest pulse is not reliable (v4 beat v6 on 2026-11-06). Off the wrist (1–2 LEDs) there is no green.
+  const g = c.width >= 7 ? 6 : c.width === 6 ? 5 : -1;
+  if (g >= 0 && out[g] === "LED") out[g] = "green";
+  void best;
   return out;
 }
 
