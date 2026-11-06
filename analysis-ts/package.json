@@ -13,11 +13,12 @@
     "ecg": "tsx src/ecg_probe.ts",
     "position": "tsx src/position.ts",
     "live": "tsx src/live.ts",
-    "test": "tsx --test test/*.test.ts",
     "typecheck": "tsc --noEmit && tsc --noEmit -p web",
     "ui": "vite build --config web/vite.config.ts --logLevel warn && tsx server/live_server.ts",
     "ui:dev": "tsx server/live_server.ts --dev",
-    "ui:build": "vite build --config web/vite.config.ts"
+    "ui:build": "vite build --config web/vite.config.ts",
+    "pull": "tsx src/pull.ts",
+    "test": "tsx --test test/*.test.ts"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.4",

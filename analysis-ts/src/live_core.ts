@@ -9,6 +9,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { autocorr, butterBandpass, findPeaks, peakProminences, principalComponent, sosfiltfilt } from "./lib/dsp.ts";
 import { detectR } from "./ecg_probe.ts";
+import { findWatch } from "./lib/adb.ts";
 import { readEvents, readNumericCsv } from "./lib/io.ts";
 import { mean, median, std } from "./lib/stats.ts";
 
@@ -588,6 +589,9 @@ export function replayFeeder(state: State, session: string, speed: number) {
 }
 
 export function setupAdb(serial: string | undefined, port: number) {
+  if (!serial) {
+    try { serial = findWatch(undefined); } catch (e) { console.log((e as Error).message); }
+  }
   const args = [...(serial ? ["-s", serial] : []), "reverse", `tcp:${port}`, `tcp:${port}`];
   const r = spawnSync("adb", args, { encoding: "utf8", timeout: 10000 });
   if (r.error) { console.log(`adb not found – is it on PATH? Otherwise set up the tunnel by hand: adb ${args.join(" ")}`); return; }

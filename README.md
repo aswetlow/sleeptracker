@@ -22,7 +22,19 @@ to CSV at night, plus Python scripts for analysis.
 Tip: turn wireless debugging off at night, and do a 30-minute test before the first night.
 
 ## 3. Export the data
-The files are in the app's private folder; with a debug build you can reach them via `run-as`:
+**One command** (watch with wireless debugging on, same Wi-Fi as the PC):
+```
+cd analysis-ts
+npm run pull                 # fetches new and changed sessions into ..\sessions
+npm run pull -- --delete     # also deletes on the watch what is complete and identical here
+npm run pull -- --list       # only shows what is on the watch
+```
+The watch is found automatically (devices adb knows, otherwise via mDNS, which works once the watch has been
+paired with this PC; otherwise `--serial <IP:port>`). Only files that are missing or differ in size are fetched;
+the transfer is checked against the file sizes on the watch. A session that is still recording is fetched as it
+is and again next time; it is never deleted. `npm run ui` also finds the watch on its own now (no `--serial` needed).
+
+By hand, if needed: the files are in the app's private folder; with a debug build you can reach them via `run-as`:
 ```
 adb devices          # with Wi-Fi debugging the watch often shows up twice -> pick one with -s <name>
 adb -s <IP:port> shell run-as de.alex.sleeplogger ls files/sessions
