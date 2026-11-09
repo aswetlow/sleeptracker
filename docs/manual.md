@@ -335,6 +335,10 @@ v4/v1, v3/v1, v4/v3 every 2 s (8-s window, moving phases ignored), the uncalibra
 110 − 25·(v4/v1), a large clock and an input for oximeter readings (saved as `oximeter <value>` in
 `sessions/live/live_<time>.txt`).
 
+> **Safety:** never hyperventilate (fast, deep breathing, e.g. Wim Hof style) before a hold. It lets you hold longer
+> but can make you pass out without warning, even on land; in or near water it can be fatal. Do these tests sitting
+> or lying down, with normal breathing before each hold, and never aim for a deep desaturation on purpose.
+
 Calibration protocol (~10 min, sitting, watch snug, arm resting at heart height, oximeter on the other hand):
 film oximeter and dashboard clock together the whole time; 2 min normal breathing; then 3× exhale fully,
 hold 30–45 s, breathe normally for 90 s. Stop if you get dizzy. Afterwards the ratio that follows the
